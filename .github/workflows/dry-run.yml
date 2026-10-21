@@ -1,0 +1,40 @@
+name: dry-run
+
+on:
+  workflow_dispatch:   # builds one post on GitHub's machines and never publishes it
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dry-run
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+      FB_PAGE_NAME: ${{ secrets.FB_PAGE_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -q -r requirements.txt
+
+      - run: python run.py tick --dry-run --force
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PW_CHANNEL: chrome
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-${{ github.run_id }}
+          path: work/
+          retention-days: 3
+          if-no-files-found: ignore
