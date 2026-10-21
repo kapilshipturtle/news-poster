@@ -1,0 +1,10 @@
+[Unit]
+Description=Check every 5 minutes whether a random post slot is due
+
+[Timer]
+OnCalendar=*:0/5
+RandomizedDelaySec=60
+Persistent=false
+
+[Install]
+WantedBy=timers.target

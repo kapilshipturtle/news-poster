@@ -1,0 +1,12 @@
+[Unit]
+Description=news-poster: publish a post if one of today's random slots is due
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=poster
+WorkingDirectory=/home/poster/news-poster
+Environment=PW_CHANNEL=chrome
+ExecStart=/home/poster/venv/bin/python run.py tick
+TimeoutStartSec=1500

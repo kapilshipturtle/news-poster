@@ -1,4 +1,5 @@
 """Publish to the Page through the official Graph API and read the post back."""
+import io
 import json
 import urllib.error
 import urllib.parse
@@ -16,6 +17,20 @@ class FacebookError(Exception):
         self.code, self.blocked = code, code in BLOCK_CODES or 'spam' in (msg or '').lower() or 'blocked' in (msg or '').lower()
 
 
+def _smallest(png):
+    """PNG or JPEG q90, whichever is smaller: the free server has 1 GB/month of outbound traffic."""
+    raw = open(png, 'rb').read()
+    try:
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.open(png).convert('RGB').save(buf, 'JPEG', quality=90)
+        if buf.tell() < len(raw):
+            return buf.getvalue(), 'jpg'
+    except ImportError:
+        pass
+    return raw, 'png'
+
+
 def _call(url, fields=None, image=None):
     if image is None:
         req = urllib.request.Request(url, data=urllib.parse.urlencode(fields).encode() if fields else None)
@@ -23,8 +38,9 @@ def _call(url, fields=None, image=None):
         b = uuid.uuid4().hex
         parts = [('--{}\r\nContent-Disposition: form-data; name="{}"\r\n\r\n{}\r\n'.format(b, k, v)).encode()
                  for k, v in fields.items()]
-        parts.append(('--{}\r\nContent-Disposition: form-data; name="source"; filename="image.png"\r\n'
-                      'Content-Type: image/png\r\n\r\n').format(b).encode() + open(image, 'rb').read() + b'\r\n')
+        data, kind = _smallest(image)
+        parts.append(('--{}\r\nContent-Disposition: form-data; name="source"; filename="image.{}"\r\n'
+                      'Content-Type: image/{}\r\n\r\n').format(b, kind, 'jpeg' if kind == 'jpg' else 'png').encode() + data + b'\r\n')
         req = urllib.request.Request(url, data=b''.join(parts) + '--{}--\r\n'.format(b).encode(),
                                      headers={'Content-Type': 'multipart/form-data; boundary=' + b})
     try:
