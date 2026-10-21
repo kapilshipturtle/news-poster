@@ -76,7 +76,9 @@ def pick_stories(cands, recent):
     rec = '\n'.join('- ' + r for r in recent) or '- (none yet)'
     out = gemini(PICK.format(cands=lines, recent=rec), temperature=0.4)
     picks = []
-    for p in out.get('picks', []):
+    for p in (out if isinstance(out, list) else out.get('picks', [])):  # lighter models sometimes return the bare list
+        if not isinstance(p, dict):
+            continue
         n = p.get('n')
         if isinstance(n, int) and 0 <= n < len(cands) and p.get('query'):
             p['title'], p['cluster'] = cands[n]['title'], cands[n]
@@ -91,7 +93,10 @@ def write_post(page, sources, tweets, allow_tweet=True, fix=None):
     prompt = WRITE.format(page=page, tweets=t, sources=src, credit=CREDIT_TWEET if allow_tweet and tweets else CREDIT_TEXT)
     if fix:
         prompt += '\n\nYOUR PREVIOUS ATTEMPT WAS REJECTED FOR: {}. Fix exactly these problems.'.format('; '.join(fix))
-    return gemini(prompt)
+    out = gemini(prompt)
+    if isinstance(out, list):  # a one-item list instead of the object
+        out = out[0] if out and isinstance(out[0], dict) else {'skip': 'model returned no post'}
+    return out
 
 
 SAME = """Is the NEW post about the same news event as any RECENT post? Same event = same incident/announcement/decision,
@@ -111,5 +116,5 @@ def same_event(new, recent):
     if not recent:
         return None
     out = gemini(SAME.format(new=new, recent='\n'.join('{}. {}'.format(i, r) for i, r in enumerate(recent))), temperature=0)
-    n = out.get('same_as')
+    n = out.get('same_as') if isinstance(out, dict) else None
     return recent[n] if isinstance(n, int) and 0 <= n < len(recent) else None
