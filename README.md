@@ -12,5 +12,8 @@ Every post passes these gates or is not published:
 
 Sources: publishers' RSS feeds, the article pages, [GDELT](https://www.gdeltproject.org/) (open data), X's official embed widget, Wikimedia Commons (credited). Captions: Gemini API (non-Preview models).
 
-Run locally: `python3 run.py tick --dry-run --force` (secrets from `~/.config/fb-news/secrets.env`).
-GitHub secrets: `GEMINI_API_KEY`, `FB_PAGE_ID`, `FB_PAGE_TOKEN`, `FB_PAGE_NAME`.
+Runs on a free Google Cloud e2-micro VM (`deploy/setup_vm.sh`, systemd timer every 5 min, state in `/home/poster/state`).
+Secrets: `/home/poster/.config/fb-news/secrets.env` on the VM (`FB_PAGE_ID`, `FB_PAGE_NAME`, `FB_PAGE_TOKEN`, `GEMINI_API_KEY`).
+GitHub Actions is used only for testing (`dry-run` workflow, never publishes), per GitHub's Actions terms.
+
+Test locally: `python3 run.py selftest` and `python3 run.py tick --dry-run --force`.

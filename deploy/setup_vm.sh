@@ -13,6 +13,10 @@ if ! command -v google-chrome >/dev/null; then
   apt-get install -y -q /tmp/chrome.deb && rm /tmp/chrome.deb
 fi
 id poster >/dev/null 2>&1 || useradd -m -s /bin/bash poster
+# every folder under the poster's home must belong to poster: a root-owned ~/.config made Chrome crash (SIGTRAP)
+install -d -o poster -g poster -m 755 /home/poster/.config
+install -d -o poster -g poster -m 700 /home/poster/.config/fb-news
+install -d -o poster -g poster -m 755 /home/poster/state
 sudo -u poster bash -c '
   cd ~ && if [ -d news-poster ]; then git -C news-poster pull -q; else git clone -q https://github.com/kapilshipturtle/news-poster.git; fi
   [ -d venv ] || python3 -m venv venv
