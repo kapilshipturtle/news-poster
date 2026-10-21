@@ -1,0 +1,47 @@
+"""Publish to the Page through the official Graph API and read the post back."""
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+G = 'https://graph.facebook.com'
+# Meta's "you are temporarily blocked / spam" family: stop posting instead of retrying
+BLOCK_CODES = {368, 32, 4, 17, 341}
+
+
+class FacebookError(Exception):
+    def __init__(self, code, sub, msg):
+        super().__init__('code {} / {}: {}'.format(code, sub, msg))
+        self.code, self.blocked = code, code in BLOCK_CODES or 'spam' in (msg or '').lower() or 'blocked' in (msg or '').lower()
+
+
+def _call(url, fields=None, image=None):
+    if image is None:
+        req = urllib.request.Request(url, data=urllib.parse.urlencode(fields).encode() if fields else None)
+    else:
+        b = uuid.uuid4().hex
+        parts = [('--{}\r\nContent-Disposition: form-data; name="{}"\r\n\r\n{}\r\n'.format(b, k, v)).encode()
+                 for k, v in fields.items()]
+        parts.append(('--{}\r\nContent-Disposition: form-data; name="source"; filename="image.png"\r\n'
+                      'Content-Type: image/png\r\n\r\n').format(b).encode() + open(image, 'rb').read() + b'\r\n')
+        req = urllib.request.Request(url, data=b''.join(parts) + '--{}--\r\n'.format(b).encode(),
+                                     headers={'Content-Type': 'multipart/form-data; boundary=' + b})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        err = json.loads(e.read() or b'{}').get('error', {})
+        raise FacebookError(err.get('code'), err.get('error_subcode'), err.get('message'))
+
+
+def publish(page_id, token, caption, image=None):
+    if image:
+        res = _call('{}/{}/photos'.format(G, page_id), {'message': caption, 'published': 'true', 'access_token': token}, image)
+        return res.get('post_id') or res['id']
+    return _call('{}/{}/feed'.format(G, page_id), {'message': caption, 'access_token': token})['id']
+
+
+def check(post_id, token):
+    return _call('{}/{}?{}'.format(G, post_id, urllib.parse.urlencode(
+        {'fields': 'id,created_time,permalink_url,is_published', 'access_token': token})))

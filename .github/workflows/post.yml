@@ -1,0 +1,68 @@
+name: post
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # check every 15 min; the 24 daily post times themselves are random (state/schedule.json)
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Post now, ignoring the schedule'
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Build the post but do not publish'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: poster
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+      FB_PAGE_NAME: ${{ secrets.FB_PAGE_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - id: due
+        run: python run.py due
+
+      - if: steps.due.outputs.due == 'true' || inputs.force
+        run: pip install -q -r requirements.txt
+
+      - if: steps.due.outputs.due == 'true' || inputs.force
+        run: python run.py tick ${{ inputs.dry_run && '--dry-run' || '' }} ${{ inputs.force && '--force' || '' }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
+          PW_CHANNEL: chrome
+
+      - if: always()
+        name: save state
+        run: |
+          git config user.name "news-poster-bot"
+          git config user.email "news-poster-bot@users.noreply.github.com"
+          git add state
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -q -m "state: $(date -u +%FT%TZ)"
+          for i in 1 2 3; do git pull -q --rebase && git push -q && exit 0; sleep 5; done
+          exit 1
+
+      - if: always() && (steps.due.outputs.due == 'true' || inputs.force)
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-${{ github.run_id }}
+          path: work/
+          retention-days: 3
+          if-no-files-found: ignore
