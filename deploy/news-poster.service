@@ -8,5 +8,6 @@ Type=oneshot
 User=poster
 WorkingDirectory=/home/poster/news-poster
 Environment=PW_CHANNEL=chrome
+Environment=STATE_DIR=/home/poster/state
 ExecStart=/home/poster/venv/bin/python run.py tick
 TimeoutStartSec=1500

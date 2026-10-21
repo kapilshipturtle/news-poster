@@ -7,7 +7,7 @@ import urllib.request
 
 UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36'
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STATE = os.path.join(ROOT, 'state')
+STATE = os.environ.get('STATE_DIR', os.path.join(ROOT, 'state'))  # the VM keeps it outside the git checkout
 WORK = os.path.join(ROOT, 'work')
 
 
