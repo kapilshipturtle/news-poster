@@ -6,7 +6,7 @@ import urllib.error
 import urllib.request
 
 # pinned, non-Preview models only: Gemini API terms forbid production use of Preview models
-MODELS = os.environ.get('GEMINI_MODELS', 'gemini-3.8-flash,gemini-2.5-flash').split(',')
+MODELS = os.environ.get('GEMINI_MODELS', 'gemini-3.8-flash,gemini-3.5-flash,gemini-3.5-flash-lite').split(',')
 
 
 def gemini(prompt, temperature=0.7):
