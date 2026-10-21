@@ -21,7 +21,8 @@ def capture(tweet_ids, work, max_n=4, min_likes=500, max_age=MAX_AGE):
     from playwright.sync_api import sync_playwright
     out = []
     with sync_playwright() as p:
-        browser = p.chromium.launch(channel=os.environ.get('PW_CHANNEL', 'chrome'), headless=True)
+        # Chrome 132+ removed the old headless mode that Playwright 1.48 asks for; request the new one explicitly
+        browser = p.chromium.launch(channel=os.environ.get('PW_CHANNEL', 'chrome'), headless=False, args=['--headless=new'])
         ctx = browser.new_context(viewport={'width': 550, 'height': 1600}, device_scale_factor=2,
                                   timezone_id='America/New_York', locale='en-US')
         for tid in tweet_ids[:max_n]:
