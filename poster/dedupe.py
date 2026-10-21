@@ -58,3 +58,11 @@ def caption_hash(caption):
 def caption_used(caption):
     c = caption_hash(caption)
     return any(h.get('caption_hash') == c for h in history())
+
+
+def named_in(subject, headline):
+    """True if the headline names the subject (e.g. 'Elon Musk' -> 'Musk', 'Meta Platforms' -> 'Meta')."""
+    name = re.sub(r'\s*\(.*?\)', '', subject or '').lower()
+    head = (headline or '').lower()
+    return any(len(w) > 2 and re.search(r'\b' + re.escape(w) + r'\b', head) for w in name.split()
+               if w not in {'the', 'of', 'and', 'inc', 'inc.', 'corporation', 'company', 'platforms'})

@@ -43,7 +43,7 @@ CANDIDATES (number. outlets carrying it | title):
 RECENTLY POSTED (do NOT repeat these stories, even reworded):
 {recent}
 
-Return JSON: {{"picks": [{{"n": <candidate number>, "query": "<4-8 word news search query for this exact story>", "tag": "<ONE label: BREAKING, POLITICS, NFL, NBA, MLB, SPORTS, ENTERTAINMENT, BUSINESS, TECH, HEALTH, WORLD, CRIME, WEATHER, SCIENCE>", "subject": "<exact English Wikipedia article title of the main person/thing, or null>"}}]}}
+Return JSON: {{"picks": [{{"n": <candidate number>, "query": "<4-8 word news search query for this exact story>", "tag": "<ONE label: BREAKING, POLITICS, NFL, NBA, MLB, SPORTS, ENTERTAINMENT, BUSINESS, TECH, HEALTH, WORLD, CRIME, WEATHER, SCIENCE>", "subject": "<exact English Wikipedia article title of the ONE person/organisation the story is about (the one a headline would name), or null if that person/organisation has no Wikipedia article. Never a related figure.>"}}]}}
 Give 4 picks, best first."""
 
 WRITE = """You write posts for "{page}", a US Facebook news page. Write like a sharp human editor, not an AI.

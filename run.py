@@ -71,7 +71,10 @@ def build(page, work):
         if isinstance(ti, int) and 0 <= ti < len(tweets):
             tw, kind = tweets[ti], 'tweet'
         else:
-            photo = None if dedupe.subject_recent(subject) else (sources.wiki_photo(subject) if subject else None)
+            photo = None
+            # a photo of someone the headline doesn't name would mislead (headline: Hubbard, photo: Trump)
+            if subject and dedupe.named_in(subject, out['headline']) and not dedupe.subject_recent(subject):
+                photo = sources.wiki_photo(subject)
             if photo:
                 (photo_url, credit), kind = photo, 'photo'
                 caption += '\n\n' + credit
