@@ -136,6 +136,25 @@ def tick(dry=False, force=False):
     log('PUBLISHED', info.get('permalink_url'))
 
 
+def selftest():
+    """Render all three image formats on this machine and run the image gate (no AI, no publishing)."""
+    load_env()
+    work = os.path.join(WORK, 'selftest')
+    os.makedirs(work, exist_ok=True)
+    page = os.environ.get('FB_PAGE_NAME', 'Dr. Olsson')
+    tw = xembed.capture(['2112678669491544109'], work, min_likes=0, max_age=None)
+    photo = sources.wiki_photo('Elon Musk')
+    results = {
+        'tweet': render('tweet', 'Self test: official X embed', 'TEST', page, work + '/tweet', embed_png=tw[0]['png']) if tw else None,
+        'photo': render('photo', 'Self test: free licensed photo', 'TEST', page, work + '/photo', photo_url=photo[0]) if photo else None,
+        'typo': render('typo', 'Self test: bold text card', 'TEST', page, work + '/typo'),
+    }
+    bad = {k: (gates.image_problems(v, k) if v else ['could not build']) for k, v in results.items()}
+    log('selftest:', bad)
+    if any(bad.values()):
+        sys.exit(1)
+
+
 def due():
     load_env()
     d = bool(schedule.due_slot())
@@ -148,6 +167,8 @@ if __name__ == '__main__':
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'tick'
     if cmd == 'due':
         due()
+    elif cmd == 'selftest':
+        selftest()
     elif cmd == 'tick':
         tick(dry='--dry-run' in sys.argv, force='--force' in sys.argv)
     else:

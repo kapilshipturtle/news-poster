@@ -26,6 +26,8 @@ jobs:
 
       - run: pip install -q -r requirements.txt
 
+      - run: python run.py selftest
+
       - run: python run.py tick --dry-run --force
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

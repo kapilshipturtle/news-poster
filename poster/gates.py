@@ -42,7 +42,7 @@ def text_problems(headline, caption):
 def image_problems(png, kind=None):
     if not os.path.exists(png):
         return ['image missing']
-    if os.path.getsize(png) < 40000:
+    if os.path.getsize(png) < 15000:  # an all-white 1080x1350 PNG is ~5 KB; a short headline card ~28 KB
         return ['image only {} bytes (blank render?)'.format(os.path.getsize(png))]
     try:
         from PIL import Image, ImageStat

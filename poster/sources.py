@@ -9,6 +9,7 @@ import html
 import json
 import re
 import time
+import urllib.parse
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -158,7 +159,7 @@ def wiki_photo(title):
     lic = meta.get('LicenseShortName', {}).get('value', '')
     if not re.match(r'(CC BY|CC0|Public domain|PD)', lic, re.I) or info.get('width', 0) < 600:
         return None
-    if not src.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):  # SVG logos/seals render as a broken box
+    if not urllib.parse.urlparse(src).path.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):  # SVG seals render as a broken box
         return None
     artist = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', meta.get('Artist', {}).get('value', 'Unknown'))).strip()
     return src, 'Photo: {} / Wikimedia Commons ({})'.format(artist, lic)

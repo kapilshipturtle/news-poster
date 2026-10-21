@@ -16,7 +16,7 @@ def _likes(s):
     return int(n * {'K': 1e3, 'M': 1e6}.get(m.group(2), 1))
 
 
-def capture(tweet_ids, work, max_n=4, min_likes=500):
+def capture(tweet_ids, work, max_n=4, min_likes=500, max_age=MAX_AGE):
     """Screenshot up to max_n candidate posts; return the usable ones (fresh, popular, not too tall)."""
     from playwright.sync_api import sync_playwright
     out = []
@@ -55,7 +55,7 @@ def capture(tweet_ids, work, max_n=4, min_likes=500):
             item = {'id': tid, 'png': png, 'handle': handle.lstrip('@'), 'name': lines[0] if lines else '',
                     'text': re.sub(r'^[·\s]*Follow\s*', '', re.sub(r'\s+', ' ', body.replace(lines[0], '', 1).replace(handle, '', 1)).strip())[:500],
                     'likes': likes or 0, 'date': date, 'tall': box['height'] / box['width'] if box else 9}
-            fresh = posted is not None and datetime.now() - posted <= MAX_AGE
+            fresh = max_age is None or (posted is not None and datetime.now() - posted <= max_age)
             if fresh and item['likes'] >= min_likes and item['tall'] <= MAX_TALL:
                 out.append(item)
         browser.close()
