@@ -28,6 +28,7 @@ jobs:
     env:
       FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
       FB_PAGE_NAME: ${{ secrets.FB_PAGE_NAME }}
+      IG_USER_ID: ${{ secrets.IG_USER_ID }}
     steps:
       - uses: actions/checkout@v4
 

@@ -36,10 +36,11 @@ def _call(url, fields=None, image=None):
 
 
 def publish(page_id, token, caption, image=None):
+    """Returns (post_id, photo_id); photo_id is None for a text post."""
     if image:
         res = _call('{}/{}/photos'.format(G, page_id), {'message': caption, 'published': 'true', 'access_token': token}, image)
-        return res.get('post_id') or res['id']
-    return _call('{}/{}/feed'.format(G, page_id), {'message': caption, 'access_token': token})['id']
+        return res.get('post_id') or res['id'], res['id']
+    return _call('{}/{}/feed'.format(G, page_id), {'message': caption, 'access_token': token})['id'], None
 
 
 def check(post_id, token):

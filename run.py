@@ -12,7 +12,7 @@ import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
-from poster import ai, dedupe, facebook, gates, schedule, sources, xembed
+from poster import ai, dedupe, facebook, gates, instagram, schedule, sources, xembed
 from poster.net import WORK, load_env
 from poster.render import render
 
@@ -123,7 +123,7 @@ def tick(dry=False, force=False):
         log('DRY RUN: not published ->', work)
         return
     try:
-        pid = facebook.publish(os.environ['FB_PAGE_ID'], os.environ['FB_PAGE_TOKEN'], post['caption'], post['image'])
+        pid, photo_id = facebook.publish(os.environ['FB_PAGE_ID'], os.environ['FB_PAGE_TOKEN'], post['caption'], post['image'])
         info = facebook.check(pid, os.environ['FB_PAGE_TOKEN'])
     except facebook.FacebookError as e:
         log('FACEBOOK ERROR:', e)
@@ -132,8 +132,33 @@ def tick(dry=False, force=False):
         schedule.mark(slot, failed=True)
         sys.exit(1)
     record.update(post_id=pid, permalink=info.get('permalink_url'), published=info.get('is_published'))
+    if os.environ.get('IG_USER_ID'):
+        record.update(cross_post_instagram(post, photo_id, work))
     schedule.mark(slot, record)
     log('PUBLISHED', info.get('permalink_url'))
+
+
+def cross_post_instagram(post, photo_id, work):
+    """Same post on the linked Instagram account. Never fails the Facebook post; Instagram needs an image,
+    so a text post gets its headline card there."""
+    ig, tok, page = os.environ['IG_USER_ID'], os.environ['FB_PAGE_TOKEN'], os.environ['FB_PAGE_ID']
+    try:
+        left = instagram.quota_left(ig, tok)
+        if left is not None and left <= 0:
+            log('INSTAGRAM skipped: daily API publishing quota used up')
+            return {'ig_error': 'quota used up'}
+        if not photo_id:
+            png = render('typo', post['headline'], post.get('tag') or 'NEWS', os.environ.get('FB_PAGE_NAME', 'Dr. Olsson'),
+                         os.path.join(work, 'ig'))
+            photo_id = instagram.hidden_photo(page, tok, png)
+        media, link = instagram.publish(ig, tok, instagram.image_url(photo_id, tok), post['caption'])
+        log('INSTAGRAM PUBLISHED', link)
+        return {'ig_media_id': media, 'ig_permalink': link}
+    except Exception as e:  # noqa: BLE001 - Instagram must never take the Facebook post down with it
+        log('INSTAGRAM ERROR:', e)
+        if getattr(e, 'blocked', False):
+            schedule.brake(24, 'instagram: {}'.format(e))
+        return {'ig_error': str(e)[:300]}
 
 
 def selftest():
