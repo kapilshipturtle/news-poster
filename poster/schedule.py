@@ -8,6 +8,7 @@ from .net import STATE
 
 PER_DAY = int(os.environ.get('POSTS_PER_DAY', '24'))
 MIN_GAP = timedelta(minutes=int(os.environ.get('MIN_GAP_MIN', '20')))
+STALE = timedelta(minutes=60)
 
 
 def _load(name, default):
@@ -70,7 +71,9 @@ def due_slot():
     if hist and now() - datetime.fromisoformat(hist[-1]['time']) < MIN_GAP:
         return None
     for s in plan['slots']:
-        if s not in plan['done'] and datetime.fromisoformat(s) <= now() and plan['failed'].get(s, 0) < 3:
+        t = datetime.fromisoformat(s)
+        # a slot missed by more than STALE is skipped, never caught up: catching up would post in bursts
+        if s not in plan['done'] and now() - STALE <= t <= now() and plan['failed'].get(s, 0) < 3:
             return s
     return None
 
