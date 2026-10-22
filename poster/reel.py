@@ -333,8 +333,9 @@ def _motion_crop(motion, w, h, frames):
 FX_FILTER = {  # effects that are a plain filter on the finished piece
     'grain': 'noise=alls=12:allf=t',
     'vignette': 'vignette',
-    'wash_warm': 'colorbalance=rs=0.10:gs=0.03:bs=-0.10:rm=0.08:bm=-0.08',
-    'wash_cool': 'colorbalance=rs=-0.08:bs=0.12:rm=-0.06:bm=0.10',
+    # washes shift the colour planes through a lookup table (colorbalance converts to RGB: measured 3x a plain piece)
+    'wash_warm': "lutyuv=u='val-9':v='val+11'",
+    'wash_cool': "lutyuv=u='val+12':v='val-8'",
     'mono': 'hue=s=0',
 }
 
@@ -373,12 +374,12 @@ def _fx(effect, flash_in, dur, folder):
         return [], '[base]format=yuv420p[v]'
     inp = ['-loop', '1', '-framerate', '30', '-t', '{:.2f}'.format(dur + 0.1), '-i', _fx_png(png, folder)]
     if effect == 'light_leak':  # sweeps across once, centred at 0.8 s (newskit: in 0.8 s, out 0.8 s)
-        g = "[1:v]format=rgba[fx];[base][fx]overlay=x='-w+min(t/{s:.2f},1)*(W+w)':y=0:eval=frame:shortest=1".format(s=min(1.6, dur))
+        g = "[1:v]format=rgba[fx];[base][fx]overlay=x='-w+min(t/{s:.2f},1)*(W+w)':y=0:eval=frame:shortest=1:enable='lt(t,{s:.2f})'".format(s=min(1.6, dur))
     elif effect == 'lens_sweep':  # passes once after 0.15 s (newskit: 1.1 s or 60 % of the shot)
-        g = "[1:v]format=rgba[fx];[base][fx]overlay=x='-w+min(max(t-0.15,0)/{s:.2f},1)*(W+w)':y=0:eval=frame:shortest=1".format(
-            s=min(1.1, dur * 0.6))
+        g = "[1:v]format=rgba[fx];[base][fx]overlay=x='-w+min(max(t-0.15,0)/{s:.2f},1)*(W+w)':y=0:eval=frame:shortest=1:enable='lt(t,{e:.2f})'".format(
+            s=min(1.1, dur * 0.6), e=0.15 + min(1.1, dur * 0.6))
     else:  # flash join: the warm leak burns out over the first 0.4 s of the incoming picture
-        g = '[1:v]format=rgba,fade=t=out:st=0.05:d=0.35:alpha=1[fx];[base][fx]overlay=0:0:shortest=1'
+        g = '[1:v]format=rgba,fade=t=out:st=0.05:d=0.35:alpha=1[fx];[base][fx]overlay=0:0:shortest=1:enable=\'lt(t,0.45)\''
     return inp, g + ',format=yuv420p[v]'
 
 
