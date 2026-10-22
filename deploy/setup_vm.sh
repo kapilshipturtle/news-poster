@@ -7,7 +7,7 @@ if ! swapon --show | grep -q /swapfile; then   # e2-micro has 1 GB RAM; Chrome n
 fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
-apt-get install -y -q python3 python3-venv git wget fonts-noto-color-emoji ffmpeg
+apt-get install -y -q python3 python3-venv git wget fonts-noto-color-emoji ffmpeg tesseract-ocr
 if ! command -v google-chrome >/dev/null; then
   wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/chrome.deb
   apt-get install -y -q /tmp/chrome.deb && rm /tmp/chrome.deb

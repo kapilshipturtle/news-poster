@@ -269,3 +269,33 @@ def photo(url, out):
         return out
     except Exception:
         return None
+
+
+def text_heavy(path, max_words=6):
+    """True when a picture carries someone else's text (subtitles, article screenshots, quote cards): more than
+    max_words real words read by Tesseract OCR. Short logos and name straps stay allowed. A clip is read at its middle."""
+    import tempfile
+    src = path
+    if path.endswith('.mp4'):
+        fd, src = tempfile.mkstemp(suffix='.png')
+        os.close(fd)
+        subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-ss', '1.2', '-i', path, '-frames:v', '1', src], capture_output=True)
+    try:
+        r = subprocess.run(['tesseract', src, '-', '--psm', '11', 'tsv'], capture_output=True, timeout=60)
+        out = r.stdout.decode('utf-8', 'ignore')
+    except (OSError, subprocess.TimeoutExpired):
+        return False  # no OCR available: never block on it
+    finally:
+        if src != path and os.path.exists(src):
+            os.remove(src)
+    words = 0
+    for row in out.splitlines()[1:]:
+        cols = row.split('\t')
+        if len(cols) == 12 and cols[11].strip():
+            try:
+                conf = float(cols[10])
+            except ValueError:
+                continue
+            if conf >= 70 and len(re.sub(r'[^A-Za-z]', '', cols[11])) >= 3:
+                words += 1
+    return words > max_words

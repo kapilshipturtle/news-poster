@@ -363,8 +363,14 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
 
     def fetch(n, m):
         if m['kind'] == 'clip':
-            return moments.cut(m['vid'], m['t'], seg_lens[n] + 0.3, os.path.join(work, 'src{:02d}.mp4'.format(n)))
-        return moments.photo(m['url'], os.path.join(work, 'src{:02d}.jpg'.format(n)))
+            f = moments.cut(m['vid'], m['t'], seg_lens[n] + 0.3, os.path.join(work, 'src{:02d}.mp4'.format(n)))
+        else:
+            f = moments.photo(m['url'], os.path.join(work, 'src{:02d}.jpg'.format(n)))
+        if f and moments.text_heavy(f):  # someone else's subtitles/article text: swapped for another moment
+            print('  text-heavy, replaced: {}'.format(m.get('desc', '')[:60]), flush=True)
+            os.remove(f)
+            return None
+        return f
 
     with ThreadPoolExecutor(3) as ex:  # 3 downloads at a time (YouTube pacing still applies per request)
         files = list(ex.map(lambda n: fetch(n, plan[n]['moment']), range(len(plan))))
