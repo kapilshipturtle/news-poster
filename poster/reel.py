@@ -263,8 +263,8 @@ def _overlay_ass(headline, page, lines, timing, total, plan, facts, names, path)
     txt = open(path).read()
     txt = txt.replace('Style: Cap,Anton,104,', 'Style: Head,Anton,96,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,1,0,1,7,3,8,70,70,170,1\n'
                       'Style: Brand,Anton,48,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,2,0,1,4,2,2,60,60,90,1\n'
-                      'Style: Fact,Anton,78,&H00FFFFFF,&H00FFFFFF,&H002E1DE1,&H002E1DE1,0,0,0,0,100,100,1,0,3,18,0,5,80,80,0,1\n'
-                      'Style: Name,Anton,62,&H000B0B0B,&H000B0B0B,&H00FFFFFF,&H00FFFFFF,0,0,0,0,100,100,1,0,3,14,0,1,70,70,0,1\n'
+                      'Style: Fact,Anton,96,&H00FFFFFF,&H00FFFFFF,&H002E1DE1,&H002E1DE1,0,0,0,0,100,100,1,0,3,18,0,5,80,80,0,1\n'
+                      'Style: Name,Anton,86,&H000B0B0B,&H000B0B0B,&H00FFFFFF,&H00FFFFFF,0,0,0,0,100,100,1,0,3,14,0,1,70,70,0,1\n'
                       'Style: Cap,Anton,104,')
     txt = txt.replace(',2,60,60,300,1', ',2,60,60,330,1')
     end = _ass_time(total)
