@@ -10,6 +10,7 @@ WorkingDirectory=/home/poster/news-poster
 Environment=PW_CHANNEL=chrome
 Environment=STATE_DIR=/home/poster/state
 Environment=KOKORO_DIR=/home/poster/models
+Environment=SFX_DIR=/home/poster/sfx
 # its own lock and -n: a 30-40 min Reel build never blocks the regular posts, and never runs twice at once
 ExecStart=/usr/bin/flock -n /home/poster/state/.reel.lock /home/poster/venv/bin/python run.py reel-tick
 TimeoutStartSec=5400

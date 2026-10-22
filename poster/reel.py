@@ -461,6 +461,49 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
             'media_keys': [media_key(p['moment']) for p in plan]}
 
 
+SFX_DIR = os.path.expanduser(os.environ.get('SFX_DIR', '~/sfx'))  # Meta Sound Collection files: kept OFF the public repo
+SFX_MAX, SFX_GAP = 6, 4.0  # user: never flood a Reel; only where the edit motivates a sound, spread out
+SFX_RULES = [  # (priority, trigger, file prefix, lead seconds before the moment, level in dB under full scale)
+    (1, 'flash', 'impact', 0.05, -13),   # a white-flash reveal
+    (2, 'fact', 'click', 0.0, -17),      # a fact box popping on screen
+    (3, 'punch', 'whoosh', 0.30, -16),   # a punch-in movement
+    (4, 'name_photo', 'shutter', 0.0, -18),  # a name title over that person's photo
+]
+
+
+def sfx_events(plan):
+    """Motivated sound effects only (no sound on plain cuts/dissolves), at most SFX_MAX per Reel, SFX_GAP s apart,
+    higher-priority moments first; files of one kind rotate so the same sound never repeats back to back."""
+    if not os.path.isdir(SFX_DIR):
+        return []
+    files = sorted(f for f in os.listdir(SFX_DIR) if f.endswith('.wav'))
+    cands = []
+    for p in plan:
+        if p.get('into') in ('flash', 'punch'):
+            cands.append((p['a'], p['into']))
+        ov = p.get('overlay') or ''
+        if ov.startswith('fact'):
+            cands.append((p['a'] + 0.15, 'fact'))
+        elif ov.startswith('name') and p['moment'].get('kind') == 'photo':
+            cands.append((p['a'] + 0.15, 'name_photo'))
+    rules = {r[1]: r for r in SFX_RULES}
+    chosen = []
+    for t, trig in sorted(cands, key=lambda c: (rules[c[1]][0], c[0])):
+        if len(chosen) >= SFX_MAX or any(abs(t - c[0]) < SFX_GAP for c in chosen):
+            continue
+        chosen.append((t, trig))
+    out, used = [], {}
+    for t, trig in sorted(chosen):
+        _, _, prefix, lead, level = rules[trig]
+        pool = [f for f in files if f.startswith(prefix)]
+        if not pool:
+            continue
+        k = used.get(prefix, 0)
+        used[prefix] = k + 1
+        out.append((max(0.0, t - lead), os.path.join(SFX_DIR, pool[k % len(pool)]), level))
+    return out
+
+
 def assemble(rendered, plan, wav, ass, total, video):
     """Joins (xfade chain: the join into piece k+1 starts where piece k ends on the final timeline), overlays, voice."""
     inputs, chain, last, t_end = [], [], '[0:v]', 0.0
@@ -473,8 +516,23 @@ def assemble(rendered, plan, wav, ass, total, video):
         chain.append('{}[{}:v]xfade=transition={}:duration={:.2f}:offset={:.3f}{}'.format(last, k, trans, td, t_end, out))
         last = out
     graph = ';'.join(chain) + (';' if chain else '') + '{}subtitles={}:fontsdir={},format=yuv420p[v]'.format(last, ass, FONTS)
-    subprocess.run(['nice', '-n', '10', 'ffmpeg', '-loglevel', 'error', '-y'] + inputs + ['-i', wav, '-filter_complex', graph,
-                    '-map', '[v]', '-map', '{}:a'.format(len(rendered)), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
+    # audio: the voice, plus the motivated sound effects each delayed to its moment and set well under the voice
+    sfx = sfx_events(plan)
+    n_v = len(rendered)
+    audio_in = ['-i', wav]
+    mix = ['[{}:a]aformat=sample_rates=48000:channel_layouts=stereo[vo]'.format(n_v)]
+    for k, (t, f, level) in enumerate(sfx):
+        audio_in += ['-i', f]
+        ms = int(t * 1000)
+        mix.append('[{}:a]aformat=sample_rates=48000:channel_layouts=stereo,volume={}dB,adelay={}|{}[s{}]'.format(n_v + 1 + k, level + 1, ms, ms, k))
+    if sfx:
+        mix.append('[vo]{}amix=inputs={}:normalize=0:duration=first,alimiter=limit=0.95[a]'.format(
+            ''.join('[s{}]'.format(k) for k in range(len(sfx))), len(sfx) + 1))
+    else:
+        mix.append('[vo]anull[a]')
+    graph += ';' + ';'.join(mix)
+    subprocess.run(['nice', '-n', '10', 'ffmpeg', '-loglevel', 'error', '-y'] + inputs + audio_in + ['-filter_complex', graph,
+                    '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
                     '-g', str(FPS * 2), '-keyint_min', str(FPS * 2),  # Meta: closed GOP of 2-5 s
                     '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000',  # Meta: AAC stereo 48 kHz >= 128 kbps
                     '-t', '{:.2f}'.format(total), '-movflags', '+faststart', video],
