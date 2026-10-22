@@ -224,8 +224,10 @@ def build(page, outlets, tweets, photo_url, tag, work):
         ''.join(cuts), len(cuts), ass, FONTS)
     subprocess.run(['nice', '-n', '10', 'ffmpeg', '-loglevel', 'error', '-y'] + inputs + ['-i', wav, '-filter_complex', graph,
                     '-map', '[v]', '-map', '{}:a'.format(len(plan)), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
-                    '-c:a', 'aac', '-b:a', '160k', '-shortest', '-movflags', '+faststart', video],
+                    '-g', str(FPS * 2), '-keyint_min', str(FPS * 2),  # Meta: closed GOP of 2-5 s
+                    '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000',  # Meta: AAC stereo 48 kHz >= 128 kbps
+                    '-shortest', '-movflags', '+faststart', video],
                    check=True, capture_output=True, timeout=1800)
-    caption = s['caption'].strip() + '\n\nAI voice narration.'
+    caption = s['caption'].strip()  # the AI-voice disclosure is Meta's own is_ai_generated flag on publish
     open(os.path.join(work, 'caption.txt'), 'w').write(caption + '\n')
     return {'video': video, 'caption': caption, 'headline': s['headline'], 'seconds': round(total, 1)}

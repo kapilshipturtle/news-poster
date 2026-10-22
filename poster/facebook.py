@@ -62,3 +62,28 @@ def publish(page_id, token, caption, image=None):
 def check(post_id, token):
     return _call('{}/{}?{}'.format(G, post_id, urllib.parse.urlencode(
         {'fields': 'id,created_time,permalink_url,is_published', 'access_token': token})))
+
+
+def publish_reel(page_id, token, video, description, version='v26.0'):
+    """Reels API: start -> upload the file -> finish as PUBLISHED with Meta's AI-content flag (the voice is synthetic).
+    Returns the video id; poll reel_status() for the result."""
+    start = _call('{}/{}/{}/video_reels'.format(G, version, page_id), {'upload_phase': 'start', 'access_token': token})
+    vid = start['video_id']
+    data = open(video, 'rb').read()
+    req = urllib.request.Request('https://rupload.facebook.com/video-upload/{}/{}'.format(version, vid), data=data, headers={
+        'Authorization': 'OAuth ' + token, 'offset': '0', 'file_size': str(len(data)), 'Content-Type': 'application/octet-stream'})
+    try:
+        with urllib.request.urlopen(req, timeout=600) as r:
+            if not json.loads(r.read()).get('success'):
+                raise FacebookError(None, None, 'reel upload not accepted')
+    except urllib.error.HTTPError as e:
+        err = json.loads(e.read() or b'{}').get('error', {})
+        raise FacebookError(err.get('code'), err.get('error_subcode'), err.get('message'))
+    _call('{}/{}/{}/video_reels'.format(G, version, page_id), {
+        'upload_phase': 'finish', 'video_id': vid, 'video_state': 'PUBLISHED', 'description': description,
+        'is_ai_generated': 'true', 'access_token': token})
+    return vid
+
+
+def reel_status(vid, token, version='v26.0'):
+    return _call('{}/{}/{}?{}'.format(G, version, vid, urllib.parse.urlencode({'fields': 'status,permalink_url', 'access_token': token})))
