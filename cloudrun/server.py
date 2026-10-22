@@ -42,12 +42,13 @@ def render(bucket, job):
     gcs_get(bucket, job + '/in.tar.gz', work + '/in.tar.gz')
     tarfile.open(work + '/in.tar.gz').extractall(work)
     marks['download_s'] = round(time.time() - t, 1)
-    spec = json.load(open(work + '/job.json'))  # pieces: [{src, kind, layout, motion, seconds}], plan, total
+    spec = json.load(open(work + '/job.json'))  # pieces: [{src, kind, layout, motion, seconds, effect, flash_in}], plan, total
     os.environ['SFX_DIR'] = work + '/sfx'
     t1 = time.time()
     with ThreadPoolExecutor(WORKERS) as ex:
         rendered = list(ex.map(lambda kv: reel.render_piece(work + '/' + kv[1]['src'], kv[1]['kind'], kv[1]['layout'], kv[1]['motion'],
-                                                            kv[1]['seconds'], '{}/seg{:02d}.mp4'.format(work, kv[0])),
+                                                            kv[1]['seconds'], '{}/seg{:02d}.mp4'.format(work, kv[0]),
+                                                            kv[1].get('effect'), kv[1].get('flash_in', False)),
                                enumerate(spec['pieces'])))
     marks['render_pieces_s'] = round(time.time() - t1, 1)
     t2 = time.time()

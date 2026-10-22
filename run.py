@@ -247,8 +247,15 @@ def reel_selftest():
     for n, (f, kind, layout, motion, into) in enumerate(srcs):
         nxt = srcs[n + 1][4] if n + 1 < len(srcs) else 'cut'
         plan.append({'a': t, 'b': t + 3.0, 'into': into, 'overlay': ['name0', None, 'fact0', None][n], 'moment': {'kind': kind}})
-        rendered.append(reel.render_piece(f, kind, layout, motion, 3.0 + reel.JOIN[nxt][1], os.path.join(w, 's{}.mp4'.format(n))))
+        rendered.append(reel.render_piece(f, kind, layout, motion, 3.0 + reel.JOIN[nxt][1], os.path.join(w, 's{}.mp4'.format(n)),
+                                          [None, 'light_leak', None, 'wash_cool'][n], into == 'flash'))
         t += 3.0
+    for kind, f, layout in (('clip', clip1, 'band'), ('photo', photo, 'full')):  # every effect, timed against a plain piece
+        for fx in [None] + list(reel.EFFECTS) + ['flash']:
+            t1 = time.time()
+            reel.render_piece(f, kind, layout, 'push_in', 3.0, os.path.join(w, 'fx-{}-{}.mp4'.format(kind, fx)),
+                              None if fx == 'flash' else fx, fx == 'flash')
+            log('  effect {:10s} on a {} piece: {:.1f} s'.format(str(fx), kind, time.time() - t1))
     wav = os.path.join(w, 'silence.wav')
     subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', '12', wav], check=True)
     lines = ['Atlanta just took control of the WNBA Finals.', 'Angel Reese scored 21 points and 12 rebounds.']

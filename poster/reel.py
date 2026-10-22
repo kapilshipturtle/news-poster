@@ -187,6 +187,19 @@ MEDIA_TOP, MEDIA_H = 600, 760  # band layout: the picture band; the headline sit
 MAX_PIECE = 3.0  # seconds: every clip/photo on screen at most this long (user: B-roll under 3-4 s)
 JOIN = {'cut': ('fade', 0.04), 'dissolve': ('fade', 0.25), 'flash': ('fadewhite', 0.18), 'punch': ('zoomin', 0.22)}
 MOTIONS = ('push_in', 'pull_out', 'pan_left', 'pan_right', 'hold')
+# B-roll effects: Channel Studio's news-brain overlay catalogue (newskit.OVERLAYS), the ones that read on a phone,
+# with the brain's own "suits" wording. The words decide; code only caps how many (user: "very few").
+EFFECTS = {
+    'grain': ('film grain', 'archive or older footage, the past, a reflective moment'),
+    'vignette': ('darker corners pulling the eye to the centre', 'a single person, a serious or tense moment'),
+    'wash_warm': ('a warm colour wash', 'family, affection, nostalgia, relief'),
+    'wash_cool': ('a cool blue wash', 'coldness, tension, police, courts, official settings'),
+    'mono': ('black and white', 'the past, a quote from long ago, a death, a sombre moment'),
+    'light_leak': ('a warm light sweeping across once', 'celebration, glamour, warmth, a turn in the story'),
+    'lens_sweep': ('a diagonal light glint passing once', 'a glossy event, red carpet, an arrival'),
+}
+# measured news channels: hard cuts are 71-97 % of joins, dissolves/flashes/punches are accents (news_brain.SHARED)
+MAX_JOINS, MAX_EFFECTS = 4, 4  # per Reel: ~18 joins, so 4 accents keeps 78 % cuts; effects never two pieces in a row
 
 EDIT = """You are the editor of a fast, well-edited vertical news Reel (like the best US news pages). The voice-over is fixed and
 cut into short pieces. For EACH piece choose:
@@ -195,11 +208,15 @@ cut into short pieces. For EACH piece choose:
 - layout: "band" (picture across the middle over a blurred copy, the classic news look) or "full" (fills the whole
   screen: use for strong close-ups, crowds, places). Switch layouts when the story moves to a new beat.
 - motion: push_in, pull_out, pan_left, pan_right or hold. Vary it; photos never sit still; match the energy of the words.
-- into: how this piece arrives: "cut" (energy), "dissolve" (same subject continuing, softer), "flash" (a reveal, a big
-  number, a turn in the story, rarely), "punch" (emphasis on a key word). The first piece is "cut".
+- into: how this piece arrives. "cut" is the normal join (71-97 % of joins on the measured news channels); the others
+  are accents, at most {max_joins} in the whole Reel, only where the words call for one: "dissolve" (a new beat or a turn
+  in the story, softer), "flash" (a reveal, a big number), "punch" (emphasis on a key word). The first piece is "cut".
+- effect: null or ONE B-roll effect when the sentence calls for it, at most {max_effects} in the whole Reel, never two
+  pieces in a row, varied: {effects}.
 - overlay: null, "fact0"/"fact1" (show that fact box exactly when that fact is spoken) or "name0".."name3" (a name
   title the first time that person/place is mentioned). Most pieces have no overlay; never two in a row.
-Editing must be present throughout: no long stretch of plain holds with cuts only.
+Editing must be present throughout (moves, layouts, the few accents spread out), but most pieces are a clean cut with
+no effect: the sentence decides, no quotas.
 
 PIECES (index | seconds | words spoken during it):
 {pieces}
@@ -210,7 +227,7 @@ MOMENTS (index | kind | what it shows):
 FACTS: {facts}
 NAMES: {names}
 
-Return JSON: {{"pieces": [{{"i": <piece index>, "moment": int, "layout": str, "motion": str, "into": str, "overlay": str|null}}, ...]}}"""
+Return JSON: {{"pieces": [{{"i": <piece index>, "moment": int, "layout": str, "motion": str, "into": str, "effect": str|null, "overlay": str|null}}, ...]}}"""
 
 
 def _even(x):
@@ -253,13 +270,16 @@ def _overlap(a, b):
 
 def edit_plan(pieces, found, facts, names):
     """The AI edit, then the hard rules in code: valid values, every moment once (an unused, best-matching moment
-    replaces a duplicate), no overlay twice in a row."""
+    replaces a duplicate), no overlay twice in a row, at most MAX_JOINS non-cut joins and MAX_EFFECTS effects (the
+    brain's earliest ones kept), never an effect on two pieces in a row."""
     plan = []
     try:
         out = ai.gemini(EDIT.format(
             pieces='\n'.join('{} | {:.1f} | {}'.format(i, p['b'] - p['a'], p['text']) for i, p in enumerate(pieces)),
             moments='\n'.join('{} | {} | {}'.format(i, m['kind'], m.get('desc', '')) for i, m in enumerate(found)),
-            facts=json.dumps(facts), names=json.dumps(names)), temperature=0.5, chain='bulk')
+            facts=json.dumps(facts), names=json.dumps(names), max_joins=MAX_JOINS, max_effects=MAX_EFFECTS,
+            effects='; '.join('"{}" = {} (suits: {})'.format(k, v[0], v[1]) for k, v in EFFECTS.items())),
+            temperature=0.5, chain='bulk')
         plan = out.get('pieces', []) if isinstance(out, dict) else out
     except Exception:
         plan = []
@@ -279,11 +299,16 @@ def edit_plan(pieces, found, facts, names):
                 or (overlay and overlay.startswith('fact') and int(overlay[-1]) >= len(facts)):
             overlay = None
         last_overlay = overlay
+        into = 'cut' if i == 0 else (d.get('into') if d.get('into') in JOIN else 'cut')
+        if into != 'cut' and sum(r['into'] != 'cut' for r in result) >= MAX_JOINS:
+            into = 'cut'
+        effect = d.get('effect') if d.get('effect') in EFFECTS else None
+        if effect and (sum(bool(r['effect']) for r in result) >= MAX_EFFECTS or (result and result[-1]['effect'])):
+            effect = None
         result.append(dict(p, moment=found[m],
                            layout=d.get('layout') if d.get('layout') in ('band', 'full') else ('band' if i % 4 < 2 else 'full'),
                            motion=d.get('motion') if d.get('motion') in MOTIONS else MOTIONS[i % 4],
-                           into='cut' if i == 0 else (d.get('into') if d.get('into') in JOIN else 'cut'),
-                           overlay=overlay))
+                           into=into, effect=effect, overlay=overlay))
     return result
 
 
@@ -305,8 +330,61 @@ def _motion_crop(motion, w, h, frames):
     return "scale={}:{},crop={}:{}:x='{}':y='{}'".format(W, H, w, h, x, y)
 
 
-def render_piece(src, kind, layout, motion, dur, out):
-    """One 1080x1920 piece. band: picture across the middle over a blurred, darkened copy; full: fills the frame."""
+FX_FILTER = {  # effects that are a plain filter on the finished piece
+    'grain': 'noise=alls=12:allf=t',
+    'vignette': 'vignette',
+    'wash_warm': 'colorbalance=rs=0.10:gs=0.03:bs=-0.10:rm=0.08:bm=-0.08',
+    'wash_cool': 'colorbalance=rs=-0.08:bs=0.12:rm=-0.06:bm=0.10',
+    'mono': 'hue=s=0',
+}
+
+
+def _fx_png(name, folder):
+    """The light textures (made once per folder, deterministic): 'leak' a warm orange-white glow (newskit .ov-leak / the
+    flash join's .leak), 'sweep' a 115-degree white glint band (newskit .ov-sweep)."""
+    path = os.path.join(folder, 'fx_{}.png'.format(name))
+    if not os.path.exists(path):
+        import numpy as np
+        from PIL import Image
+        y, x = np.mgrid[0:1920, 0:1080].astype(np.float32)
+        rgba = np.zeros((1920, 1080, 4), np.float32)
+        if name == 'leak':
+            d = np.sqrt(((x - 540) / 650) ** 2 + ((y - 960) / 1150) ** 2)
+            k = np.clip(d / 0.75, 0, 1)[..., None]
+            rgba[..., :3] = (1 - k) * np.array([255, 240, 215]) + k * np.array([255, 150, 70])
+            rgba[..., 3] = 255 * 0.85 * np.clip(1 - d, 0, 1) ** 1.3
+        else:
+            a = np.radians(115)
+            dist = np.abs((x - 540) * np.cos(a) + (y - 960) * np.sin(a))
+            rgba[..., :3] = 255
+            rgba[..., 3] = 255 * 0.55 * np.clip(1 - dist / 140, 0, 1)
+        tmp = path + '.{}.tmp.png'.format(os.getpid())
+        Image.fromarray(rgba.astype(np.uint8), 'RGBA').save(tmp)
+        os.replace(tmp, path)
+    return path
+
+
+def _fx(effect, flash_in, dur, folder):
+    """(extra ffmpeg inputs, graph from [base] to [v]) for a piece's effect and the light of a flash join into it."""
+    if effect in FX_FILTER:
+        return [], '[base]{},format=yuv420p[v]'.format(FX_FILTER[effect])
+    png = {'light_leak': 'leak', 'lens_sweep': 'sweep'}.get(effect) or ('leak' if flash_in else None)
+    if not png:
+        return [], '[base]format=yuv420p[v]'
+    inp = ['-loop', '1', '-framerate', '30', '-t', '{:.2f}'.format(dur + 0.1), '-i', _fx_png(png, folder)]
+    if effect == 'light_leak':  # sweeps across once, centred at 0.8 s (newskit: in 0.8 s, out 0.8 s)
+        g = "[1:v]format=rgba[fx];[base][fx]overlay=x='-w+min(t/{s:.2f},1)*(W+w)':y=0:eval=frame:shortest=1".format(s=min(1.6, dur))
+    elif effect == 'lens_sweep':  # passes once after 0.15 s (newskit: 1.1 s or 60 % of the shot)
+        g = "[1:v]format=rgba[fx];[base][fx]overlay=x='-w+min(max(t-0.15,0)/{s:.2f},1)*(W+w)':y=0:eval=frame:shortest=1".format(
+            s=min(1.1, dur * 0.6))
+    else:  # flash join: the warm leak burns out over the first 0.4 s of the incoming picture
+        g = '[1:v]format=rgba,fade=t=out:st=0.05:d=0.35:alpha=1[fx];[base][fx]overlay=0:0:shortest=1'
+    return inp, g + ',format=yuv420p[v]'
+
+
+def render_piece(src, kind, layout, motion, dur, out, effect=None, flash_in=False):
+    """One 1080x1920 piece. band: picture across the middle over a blurred, darkened copy; full: fills the frame.
+    effect: one of EFFECTS on the finished piece; flash_in: the piece arrives by a flash join (a warm leak burns out)."""
     frames = max(2, int(round(dur * FPS)))
     if kind == 'clip':
         inp = ['-i', src]
@@ -316,7 +394,7 @@ def render_piece(src, kind, layout, motion, dur, out):
         pre = 'fps=30'
     if layout == 'full':
         graph = ('[0:v]{pre},scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,{mv},'
-                 'eq=brightness=-0.05,trim=duration={d:.2f},setpts=PTS-STARTPTS,format=yuv420p[v]').format(
+                 'eq=brightness=-0.05,trim=duration={d:.2f},setpts=PTS-STARTPTS[base]').format(
             pre=pre, mv=_motion_crop(motion, 1080, 1920, frames), d=dur)
     else:
         from PIL import Image
@@ -331,10 +409,11 @@ def render_piece(src, kind, layout, motion, dur, out):
         fg = 'scale={fw}:{fh}:force_original_aspect_ratio=increase,crop={fw}:{fh},{mv},setsar=1'.format(
             fw=fw, fh=fh, mv=_motion_crop(motion, fw, fh, frames))
         graph = ('[0:v]{pre},split[a][b];[a]{bg}[bg];[b]{fg}[fg];[bg][fg]overlay=(W-w)/2:{top}+({mh}-h)/2,'
-                 'trim=duration={d:.2f},setpts=PTS-STARTPTS,format=yuv420p[v]').format(
+                 'trim=duration={d:.2f},setpts=PTS-STARTPTS[base]').format(
             pre=pre, bg=bg, fg=fg, top=MEDIA_TOP, mh=MEDIA_H, d=dur)
-    subprocess.run(['nice', '-n', '10', 'ffmpeg', '-loglevel', 'error', '-y'] + inp + [
-        '-filter_complex', graph, '-map', '[v]', '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-r', '30', out],
+    fx_in, fx_graph = _fx(effect, flash_in, dur, os.path.dirname(os.path.abspath(out)))
+    subprocess.run(['nice', '-n', '10', 'ffmpeg', '-loglevel', 'error', '-y'] + inp + fx_in + [
+        '-filter_complex', graph + ';' + fx_graph, '-map', '[v]', '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-r', '30', out],
         check=True, capture_output=True, timeout=900)
     return out
 
@@ -444,7 +523,8 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
             return {'skip': 'could not fetch enough moments'}
     stage('fetched {} sources'.format(len(files)))
     rendered = [render_piece(files[n], p['moment']['kind'], p['layout'], p['motion'], seg_lens[n],
-                             os.path.join(work, 'seg{:02d}.mp4'.format(n))) for n, p in enumerate(plan)]
+                             os.path.join(work, 'seg{:02d}.mp4'.format(n)), p['effect'], p['into'] == 'flash')
+                for n, p in enumerate(plan)]
     stage('rendered pieces')
     ass = os.path.join(work, 'overlay.ass')
     screen = s.get('screen_lines') if len(s.get('screen_lines') or []) == len(s['lines']) else s['lines']
@@ -457,7 +537,8 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
     kinds = [p['moment']['kind'] for p in plan]
     return {'video': video, 'caption': caption, 'headline': s['headline'], 'seconds': round(total, 1),
             'moments': '{} clips, {} photos, {} joins: {}'.format(kinds.count('clip'), kinds.count('photo'), len(plan) - 1,
-                                                                    ', '.join('{}x{}'.format(v, [p['into'] for p in plan].count(v)) for v in JOIN)),
+                                                                    ', '.join('{}x{}'.format(v, [p['into'] for p in plan].count(v)) for v in JOIN))
+                       + '; effects: {}'.format(', '.join('{}@{}'.format(p['effect'], n) for n, p in enumerate(plan) if p['effect']) or 'none'),
             'media_keys': [media_key(p['moment']) for p in plan]}
 
 
