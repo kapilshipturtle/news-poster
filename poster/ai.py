@@ -28,6 +28,12 @@ def gemini(prompt, temperature=0.7):
                     time.sleep(20 * (attempt + 1))
                     continue
                 break  # try the next model
+            except (TimeoutError, OSError, ValueError, KeyError) as e:  # no answer in time / connection drop / empty reply
+                err = e
+                if attempt < 2:
+                    time.sleep(15 * (attempt + 1))
+                    continue
+                break
     raise err
 
 
@@ -139,6 +145,12 @@ def gemini_vision(prompt, jpegs, temperature=0.2):
                 err = e
                 if e.code in (429, 500, 503) and attempt < 2:
                     time.sleep(20 * (attempt + 1))
+                    continue
+                break
+            except (TimeoutError, OSError, ValueError, KeyError) as e:
+                err = e
+                if attempt < 2:
+                    time.sleep(15 * (attempt + 1))
                     continue
                 break
     raise err
