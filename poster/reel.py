@@ -152,17 +152,31 @@ def _even(x):
 
 
 def split_pieces(lines, timing, total):
-    """The voice cut into pieces of at most MAX_PIECE s, each with the words spoken during it."""
+    """The voice cut into pieces of at most MAX_PIECE s on ONE continuous timeline (a cut lands on a sentence boundary
+    when one falls 2-3 s after the last cut), each with the words spoken during it. Fewer, fuller pieces than cutting
+    every sentence separately: a 52 s voice needs ~18 different moments instead of 24."""
+    words = []  # (start, end, word) for every spoken word, spread over its sentence by letters
+    for (a, b), line in zip(timing, lines):
+        ws = line.split()
+        n = sum(len(w) + 1 for w in ws) or 1
+        t = a
+        for w in ws:
+            d = (b - a) * (len(w) + 1) / n
+            words.append((t, t + d, w))
+            t += d
+    bounds = sorted({a - GAP / 2 for a, _ in timing[1:]})
+    cuts, last = [0.0], 0.0
+    while total - last > MAX_PIECE:
+        near = [x for x in bounds if last + 2.0 <= x <= last + MAX_PIECE]
+        last = near[-1] if near else last + MAX_PIECE
+        cuts.append(last)
+    if total - cuts[-1] < 1.0 and len(cuts) > 1:  # no sliver at the end: the last two pieces share the remainder
+        cuts[-1] = (cuts[-2] + total) / 2
+    cuts.append(total)
     out = []
-    for i, ((a, b), line) in enumerate(zip(timing, lines)):
-        start = 0.0 if i == 0 else a - GAP / 2
-        end = total if i == len(timing) - 1 else timing[i + 1][0] - GAP / 2
-        n = max(1, int(-(-(end - start) // MAX_PIECE)))
-        words = line.split()
-        per = max(1, -(-len(words) // n))
-        step = (end - start) / n
-        for k in range(n):
-            out.append({'a': start + k * step, 'b': start + (k + 1) * step, 'text': ' '.join(words[k * per:(k + 1) * per]) or line})
+    for a, b in zip(cuts, cuts[1:]):
+        text = ' '.join(w for s_, e_, w in words if s_ < b and e_ > a) or ' '.join(lines)
+        out.append({'a': a, 'b': b, 'text': text})
     return out
 
 
