@@ -320,6 +320,11 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
     facts = [f for f in (s.get('facts') or []) if isinstance(f, str)][:2]
     clips_ok = (tag or '').upper() not in moments.SPORTS_TAGS  # sports: photos only (leagues enforce hardest)
     stage('script')
+    # libraries load ONCE here: importing numpy in two threads at once fails ("partially initialized module")
+    import numpy  # noqa: F401
+    import soundfile  # noqa: F401
+    from kokoro_onnx import Kokoro  # noqa: F401
+    from PIL import Image  # noqa: F401
     # the voice (CPU) is recorded while the moments are searched and checked (network + AI): same result, less waiting
     with ThreadPoolExecutor(1) as ex:
         v = ex.submit(voice, s['lines'], work)
