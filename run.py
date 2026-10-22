@@ -201,6 +201,35 @@ def selftest():
         sys.exit(1)
 
 
+def reel_samples(count=2):
+    """Build `count` Reels on different trending stories into work/reel-*/ and never publish them (for review)."""
+    load_env()
+    from poster import reel
+    page = os.environ.get('FB_PAGE_NAME', 'Dr. Olsson')
+    picks = ai.pick_stories(sources.trending(), dedupe.recent_headlines())
+    made = 0
+    for pick in picks:
+        if made >= count:
+            break
+        work = os.path.join(WORK, 'reel-' + schedule.now().strftime('%Y%m%d-%H%M%S'))
+        os.makedirs(work, exist_ok=True)
+        outlets, embedded = sources.articles(pick['cluster'], pick['query'])
+        if len(outlets) < 2:
+            log('  skip (only {} outlets): {}'.format(len(outlets), pick['query']))
+            continue
+        tweets = xembed.capture(embedded, work, min_likes=MIN_LIKES) if embedded else []
+        subject = pick.get('subject')
+        photo = sources.wiki_photo(subject) if subject and dedupe.named_in(subject, pick['title']) else None
+        t0 = time.time()
+        res = reel.build(page, outlets, tweets, photo[0] if photo else None, pick.get('tag', 'NEWS'), work)
+        if res.get('skip'):
+            log('  skip ({}): {}'.format(res['skip'], pick['query']))
+            continue
+        made += 1
+        log('REEL {} | {:.0f} s long | built in {:.0f} s | X posts {} | photo {} -> {}'.format(
+            res['headline'], res['seconds'], time.time() - t0, len(tweets), bool(photo), res['video']))
+
+
 def due():
     load_env()
     d = bool(schedule.due_slot())
@@ -213,6 +242,8 @@ if __name__ == '__main__':
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'tick'
     if cmd == 'due':
         due()
+    elif cmd == 'reel-samples':
+        reel_samples(int(sys.argv[2]) if len(sys.argv) > 2 else 2)
     elif cmd == 'selftest':
         selftest()
     elif cmd == 'tick':
