@@ -143,6 +143,9 @@ def bing_images(query, n=24):
         except ValueError:
             continue
         w, h = (int(wh.group(1)), int(wh.group(2))) if wh else (0, 0)
+        host = urllib.parse.urlparse(d.get('murl', '')).netloc.lower()
+        if any(x in host for x in ('ytimg.com', 'ggpht.com', 'yt3.', 'fbsbx.com', 'tiktokcdn')):
+            continue  # other channels' video thumbnails: big stylised text the word count cannot see
         if d.get('murl') and d.get('turl') and w >= 900 and h and w / h >= 1.45:  # landscape, close to 16:9
             rows.append({'url': d['murl'], 'thumb': d['turl'], 'w': w, 'h': h})
     return rows[:n]
@@ -290,14 +293,21 @@ def text_heavy(path, max_words=6):
     finally:
         if src != path and os.path.exists(src):
             os.remove(src)
-    words = 0
+    words, big, img_h = 0, 0, 0
     for row in out.splitlines()[1:]:
         cols = row.split('\t')
-        if len(cols) == 12 and cols[11].strip():
-            try:
-                conf = float(cols[10])
-            except ValueError:
-                continue
-            if conf >= 70 and len(re.sub(r'[^A-Za-z]', '', cols[11])) >= 3:
-                words += 1
-    return words > max_words
+        if len(cols) != 12:
+            continue
+        if cols[0] == '1':  # the page row carries the image height
+            img_h = int(cols[9] or 0)
+        if not cols[11].strip():
+            continue
+        try:
+            conf, h = float(cols[10]), int(cols[9])
+        except ValueError:
+            continue
+        if conf >= 55 and len(re.sub(r'[^A-Za-z0-9]', '', cols[11])) >= 3:
+            words += 1
+            if img_h and h > 0.06 * img_h:  # a thumbnail/title graphic: few words, but huge
+                big += 1
+    return words > max_words or big >= 2
