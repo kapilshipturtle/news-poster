@@ -18,6 +18,12 @@ YTDLP = os.environ.get('YTDLP', os.path.join(os.path.dirname(sys.executable), 'y
 REACTION = re.compile(r'(?i)\b(react(s|ion|ing)?|analy(sis|st|zes?)|commentary|podcast|explained|breakdown|opinion|debate|'
                       r'discuss(es|ion)?|panel|rant|live ?stream|livestream|q ?& ?a|my thoughts|full (episode|show))\b')
 PAUSE = 2.0  # seconds between YouTube requests (rate limits / bot checks)
+# owners that enforce hardest (user: "use pics when strict, no strikes"): their videos are never cut, in any story
+STRICT = re.compile(r'(?i)\b(nfl|mlb|nba|wnba|nhl|mls|ufc|wwe|fifa|uefa|premier league|la ?liga|bundesliga|ncaa|olympics?|espn|'
+                    r'fox sports|tnt sports|cbs sports|nbc sports|bleacher report|house of highlights|dazn|sky sports|nfl films|'
+                    r'warner bros|disney|marvel|pixar|netflix|hbo|max|paramount|universal pictures|sony pictures|lionsgate|a24|'
+                    r'vevo|records|music|official music video|trailer)\b')
+SPORTS_TAGS = {'NFL', 'NBA', 'MLB', 'NHL', 'WNBA', 'SPORTS', 'SOCCER', 'UFC'}  # sports stories use photos only
 _last = [0.0]
 BING_HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -32,7 +38,9 @@ truly shows this story's person, place, organisation or event. A news channel's 
 REJECT: a studio presenter, anchor, reporter or commentator talking to camera; a podcast/reaction frame; a stock-agency
 watermark (getty, alamy, shutterstock, istock...); a chyron or headline about ANOTHER story; burned-in subtitles; split screens,
 collages, thumbnails, quote cards, text-heavy cards, title cards, memes; the wrong person or place; a child as the focus;
-AI-looking, blurry or tiny pictures; black or blank frames.
+AI-looking, blurry or tiny pictures; black or blank frames; a scene from a MOVIE or TV SHOW; a music video; live game
+action from a sports broadcast; the single decisive "big moment" of an event (a winning shot, a key reveal) - prefer
+context shots: arrivals, crowds, places, buildings, press events, people reacting.
 Return JSON: {{"<sheet letter>": {{"<number>": {{"keep": true|false, "desc": "what it shows, <= 12 words"}}}}}} for every number."""
 
 
@@ -57,7 +65,7 @@ def yt_search(query, subject_words, n=10):
             dur = float(dur)
         except ValueError:
             continue
-        if not 20 <= dur <= 2400 or REACTION.search(title) or REACTION.search(chan):
+        if not 20 <= dur <= 2400 or REACTION.search(title) or REACTION.search(chan) or STRICT.search(chan) or STRICT.search(title):
             continue
         own = any(w in chan.lower() for w in subject_words if len(w) > 3)
         out.append({'id': vid, 'dur': dur, 'channel': chan, 'title': title, 'own': own})
@@ -150,14 +158,14 @@ def _sheet(items, path, label):
     return label
 
 
-def find(story, names, query, work, want=18):
+def find(story, names, query, work, want=24, clips_ok=True, used=()):
     """Checked real moments from up to 5 different wide videos (at most 2 from one video, 20+ s apart) and Bing photos,
     returned clip/photo alternating so no single source dominates the Reel."""
     from PIL import Image
     os.makedirs(work, exist_ok=True)
     words = [w.lower() for n in names for w in re.findall(r'[A-Za-z]+', n)]
     videos, seen = [], set()
-    for q in [query] + ['{} {}'.format(n, query.split()[0]) for n in names[:2]]:
+    for q in ([query] + ['{} {}'.format(n, query.split()[0]) for n in names[:2]]) if clips_ok else []:
         for v in yt_search(q, words):
             if v['id'] not in seen:
                 seen.add(v['id'])
@@ -177,10 +185,17 @@ def find(story, names, query, work, want=18):
         _sheet([Image.open(p) for _, p in pick], path, L)
         sheets.append(path)
         index[L] = [{'kind': 'clip', 'vid': v['id'], 't': t, 'channel': v['channel']} for t, _ in pick]
-    photos = bing_images(query)
-    if photos:
+    photos, seen_url = [], set(used)
+    for q in [query] + names[:3]:  # several searches: enough different photos so nothing has to repeat
+        for ph in bing_images(q):
+            if ph['url'] not in seen_url:
+                seen_url.add(ph['url'])
+                photos.append(ph)
+    for chunk in (photos[:20], photos[20:40]):
+        if not chunk:
+            continue
         thumbs, kept = [], []
-        for ph in photos[:20]:
+        for ph in chunk:
             try:
                 raw = urllib.request.urlopen(urllib.request.Request(ph['thumb'], headers={'User-Agent': BING_HEADERS['User-Agent']}),
                                              timeout=15).read()
@@ -208,6 +223,8 @@ def find(story, names, query, work, want=18):
                 continue
             if item['kind'] == 'clip':
                 if len(taken) >= 2 or any(abs(item['t'] - t) < 20 for t in taken):  # variety: 2 per video, 20 s apart
+                    continue
+                if '{}@{}'.format(item['vid'], int(item['t'] // 10)) in used:  # shown in an earlier Reel
                     continue
                 taken.append(item['t'])
                 clips.append(dict(item, desc=m.get('desc', '')))

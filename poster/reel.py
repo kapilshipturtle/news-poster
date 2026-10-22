@@ -1,5 +1,6 @@
-"""45-60 s vertical news Reels (1080x1920): AI script -> Kokoro voice line by line -> scene cards (Chrome)
--> ffmpeg slow zoom per scene + burned-in captions. Voice only, no music."""
+"""45-60 s vertical news Reels (1080x1920): AI script -> Kokoro voice line by line -> real moments (moments.py)
+-> an edit brain picks per 3 s piece the moment that matches the words, layout, motion, join and overlay -> ffmpeg.
+Voice only, no music; the clips' own sound is never used."""
 import html
 import json
 import os
@@ -114,83 +115,180 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 ''' + '\n'.join(ev) + '\n')
 
 
-MEDIA_TOP, MEDIA_H = 600, 760  # the picture band; the headline sits above it, the captions below
+MEDIA_TOP, MEDIA_H = 600, 760  # band layout: the picture band; the headline sits above it, the captions below
+MAX_PIECE = 3.0  # seconds: every clip/photo on screen at most this long (user: B-roll under 3-4 s)
+JOIN = {'cut': ('fade', 0.04), 'dissolve': ('fade', 0.25), 'flash': ('fadewhite', 0.18), 'punch': ('zoomin', 0.22)}
+MOTIONS = ('push_in', 'pull_out', 'pan_left', 'pan_right', 'hold')
+
+EDIT = """You are the editor of a fast, well-edited vertical news Reel (like the best US news pages). The voice-over is fixed and
+cut into short pieces. For EACH piece choose:
+- moment: the index of the real clip/photo whose description best MATCHES WHAT IS BEING SAID in that piece (main goal).
+  Every moment at most once. Prefer clips; the opening piece must be the strongest, most striking moment.
+- layout: "band" (picture across the middle over a blurred copy, the classic news look) or "full" (fills the whole
+  screen: use for strong close-ups, crowds, places). Switch layouts when the story moves to a new beat.
+- motion: push_in, pull_out, pan_left, pan_right or hold. Vary it; photos never sit still; match the energy of the words.
+- into: how this piece arrives: "cut" (energy), "dissolve" (same subject continuing, softer), "flash" (a reveal, a big
+  number, a turn in the story, rarely), "punch" (emphasis on a key word). The first piece is "cut".
+- overlay: null, "fact0"/"fact1" (show that fact box exactly when that fact is spoken) or "name0".."name3" (a name
+  title the first time that person/place is mentioned). Most pieces have no overlay; never two in a row.
+Editing must be present throughout: no long stretch of plain holds with cuts only.
+
+PIECES (index | seconds | words spoken during it):
+{pieces}
+
+MOMENTS (index | kind | what it shows):
+{moments}
+
+FACTS: {facts}
+NAMES: {names}
+
+Return JSON: {{"pieces": [{{"i": <piece index>, "moment": int, "layout": str, "motion": str, "into": str, "overlay": str|null}}, ...]}}"""
 
 
 def _even(x):
     return int(x) // 2 * 2
 
 
-def _segment(src, kind, dur, out):
-    """One 1080x1920 piece: the clip/photo fitted into the band over a blurred, darkened copy of itself."""
-    bg = ('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,scale=270:480,boxblur=10:2,'
-          'scale=1080:1920,eq=brightness=-0.10')
+def split_pieces(lines, timing, total):
+    """The voice cut into pieces of at most MAX_PIECE s, each with the words spoken during it."""
+    out = []
+    for i, ((a, b), line) in enumerate(zip(timing, lines)):
+        start = 0.0 if i == 0 else a - GAP / 2
+        end = total if i == len(timing) - 1 else timing[i + 1][0] - GAP / 2
+        n = max(1, int(-(-(end - start) // MAX_PIECE)))
+        words = line.split()
+        per = max(1, -(-len(words) // n))
+        step = (end - start) / n
+        for k in range(n):
+            out.append({'a': start + k * step, 'b': start + (k + 1) * step, 'text': ' '.join(words[k * per:(k + 1) * per]) or line})
+    return out
+
+
+def _overlap(a, b):
+    wa, wb = set(re.findall(r'[a-z0-9]+', a.lower())), set(re.findall(r'[a-z0-9]+', b.lower()))
+    return len(wa & wb)
+
+
+def edit_plan(pieces, found, facts, names):
+    """The AI edit, then the hard rules in code: valid values, every moment once (an unused, best-matching moment
+    replaces a duplicate), no overlay twice in a row."""
+    plan = []
+    try:
+        out = ai.gemini(EDIT.format(
+            pieces='\n'.join('{} | {:.1f} | {}'.format(i, p['b'] - p['a'], p['text']) for i, p in enumerate(pieces)),
+            moments='\n'.join('{} | {} | {}'.format(i, m['kind'], m.get('desc', '')) for i, m in enumerate(found)),
+            facts=json.dumps(facts), names=json.dumps(names)), temperature=0.5)
+        plan = out.get('pieces', []) if isinstance(out, dict) else out
+    except Exception:
+        plan = []
+    by_i = {d.get('i'): d for d in plan if isinstance(d, dict)}
+    used, result, last_overlay = set(), [], None
+    for i, p in enumerate(pieces):
+        d = by_i.get(i, {})
+        m = d.get('moment')
+        if not isinstance(m, int) or not 0 <= m < len(found) or m in used:
+            free = [k for k in range(len(found)) if k not in used]
+            if not free:
+                return None  # not enough different moments: the Reel is skipped rather than repeating shots
+            m = max(free, key=lambda k: (_overlap(found[k].get('desc', ''), p['text']), found[k]['kind'] == 'clip'))
+        used.add(m)
+        overlay = d.get('overlay')
+        if overlay not in ['fact0', 'fact1'] + ['name{}'.format(k) for k in range(len(names))] or overlay == last_overlay \
+                or (overlay and overlay.startswith('fact') and int(overlay[-1]) >= len(facts)):
+            overlay = None
+        last_overlay = overlay
+        result.append(dict(p, moment=found[m],
+                           layout=d.get('layout') if d.get('layout') in ('band', 'full') else ('band' if i % 4 < 2 else 'full'),
+                           motion=d.get('motion') if d.get('motion') in MOTIONS else MOTIONS[i % 4],
+                           into='cut' if i == 0 else (d.get('into') if d.get('into') in JOIN else 'cut'),
+                           overlay=overlay))
+    return result
+
+
+def _motion_crop(motion, w, h, frames):
+    """A crop window that moves over a picture pre-scaled 12% larger than (w, h): the camera move of a piece."""
+    W, H = _even(w * 1.12), _even(h * 1.12)
+    f = 'min(n/{},1)'.format(max(1, frames - 1))
+    x, y = '(iw-ow)/2', '(ih-oh)/2'
+    if motion == 'pan_left':
+        x = '(iw-ow)*(1-{})'.format(f)
+    elif motion == 'pan_right':
+        x = '(iw-ow)*{}'.format(f)
+    if motion in ('push_in', 'pull_out'):
+        # zoompan keeps the frame size while the zoom changes; works per frame on clips (d=1) and stills alike
+        z = '1+0.10*{}'.format(f.replace('n', 'on')) if motion == 'push_in' else '1.10-0.10*{}'.format(f.replace('n', 'on'))
+        return 'scale={}:{},zoompan=z=\'{}\':x=\'iw/2-(iw/zoom/2)\':y=\'ih/2-(ih/zoom/2)\':d=1:s={}x{}:fps=30'.format(W, H, z, w, h)
+    return "scale={}:{},crop={}:{}:x='{}':y='{}'".format(W, H, w, h, x, y)
+
+
+def render_piece(src, kind, layout, motion, dur, out):
+    """One 1080x1920 piece. band: picture across the middle over a blurred, darkened copy; full: fills the frame."""
+    frames = max(2, int(round(dur * FPS)))
     if kind == 'clip':
-        fg = 'scale=1080:{}:force_original_aspect_ratio=decrease,setsar=1'.format(MEDIA_H)
-        graph = ('[0:v]fps=30,tpad=stop_mode=clone:stop_duration={d},split[a][b];[a]{bg}[bg];[b]{fg}[fg];'
-                 '[bg][fg]overlay=(W-w)/2:{top}+({h}-h)/2,trim=duration={d},setpts=PTS-STARTPTS,format=yuv420p[v]').format(
-            d=dur, bg=bg, fg=fg, top=MEDIA_TOP, h=MEDIA_H)
         inp = ['-i', src]
+        pre = 'fps=30,tpad=stop_mode=clone:stop_duration={:.2f}'.format(dur)
+    else:
+        inp = ['-loop', '1', '-framerate', '30', '-t', '{:.2f}'.format(dur + 0.1), '-i', src]
+        pre = 'fps=30'
+    if layout == 'full':
+        graph = ('[0:v]{pre},scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,{mv},'
+                 'eq=brightness=-0.05,trim=duration={d:.2f},setpts=PTS-STARTPTS,format=yuv420p[v]').format(
+            pre=pre, mv=_motion_crop(motion, 1080, 1920, frames), d=dur)
     else:
         from PIL import Image
-        w, h = Image.open(src).size
-        k = min(1080 / w, MEDIA_H / h)
-        fw, fh = _even(w * k), _even(h * k)
-        # slow pan across a slightly enlarged photo (works on ffmpeg 4.2 too, and is cheaper than zoompan)
-        fg = ("scale={sw}:{sh},crop={fw}:{fh}:x='(iw-ow)*t/{d}':y='(ih-oh)/2',setsar=1").format(
-            sw=_even(fw * 1.08), sh=_even(fh * 1.08), fw=fw, fh=fh, d=dur)
-        graph = ('[0:v]fps=30,split[a][b];[a]{bg}[bg];[b]{fg}[fg];[bg][fg]overlay=(W-w)/2:{top}+({h}-h)/2,'
-                 'trim=duration={d},setpts=PTS-STARTPTS,format=yuv420p[v]').format(d=dur, bg=bg, fg=fg, top=MEDIA_TOP, h=MEDIA_H)
-        inp = ['-loop', '1', '-t', '{:.2f}'.format(dur + 0.1), '-i', src]
+        if kind == 'clip':
+            fw, fh = 1080, _even(1080 * 9 / 16)
+        else:
+            w, h = Image.open(src).size
+            k = min(1080 / w, MEDIA_H / h)
+            fw, fh = _even(w * k), _even(h * k)
+        bg = ('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,scale=270:480,boxblur=10:2,'
+              'scale=1080:1920,eq=brightness=-0.12')
+        fg = 'scale={fw}:{fh}:force_original_aspect_ratio=increase,crop={fw}:{fh},{mv},setsar=1'.format(
+            fw=fw, fh=fh, mv=_motion_crop(motion, fw, fh, frames))
+        graph = ('[0:v]{pre},split[a][b];[a]{bg}[bg];[b]{fg}[fg];[bg][fg]overlay=(W-w)/2:{top}+({mh}-h)/2,'
+                 'trim=duration={d:.2f},setpts=PTS-STARTPTS,format=yuv420p[v]').format(
+            pre=pre, bg=bg, fg=fg, top=MEDIA_TOP, mh=MEDIA_H, d=dur)
     subprocess.run(['nice', '-n', '10', 'ffmpeg', '-loglevel', 'error', '-y'] + inp + [
-        '-filter_complex', graph, '-map', '[v]', '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', out],
+        '-filter_complex', graph, '-map', '[v]', '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-r', '30', out],
         check=True, capture_output=True, timeout=900)
     return out
 
 
-def _overlay_ass(headline, page, lines, timing, total, path):
-    """Captions under the picture, the headline above it for the whole Reel, the page name at the bottom."""
+def _overlay_ass(headline, page, lines, timing, total, plan, facts, names, path):
+    """Captions, the headline (top), the page name (bottom), fact boxes and name titles where the edit put them."""
     captions(lines, timing, path)
     txt = open(path).read()
     txt = txt.replace('Style: Cap,Anton,104,', 'Style: Head,Anton,96,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,1,0,1,7,3,8,70,70,170,1\n'
                       'Style: Brand,Anton,48,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,2,0,1,4,2,2,60,60,90,1\n'
+                      'Style: Fact,Anton,78,&H00FFFFFF,&H00FFFFFF,&H002E1DE1,&H002E1DE1,0,0,0,0,100,100,1,0,3,18,0,5,80,80,0,1\n'
+                      'Style: Name,Anton,62,&H000B0B0B,&H000B0B0B,&H00FFFFFF,&H00FFFFFF,0,0,0,0,100,100,1,0,3,14,0,1,70,70,0,1\n'
                       'Style: Cap,Anton,104,')
-    txt = txt.replace('Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Head', 'Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Head')
-    txt = txt.replace(',2,60,60,300,1', ',2,60,60,330,1')  # captions sit just under the picture band
+    txt = txt.replace(',2,60,60,300,1', ',2,60,60,330,1')
     end = _ass_time(total)
     txt += 'Dialogue: 1,0:00:00.00,{},Head,,0,0,0,,{}\n'.format(end, headline.upper().replace('{', '(').replace('}', ')'))
     txt += 'Dialogue: 1,0:00:00.00,{},Brand,,0,0,0,,{}\n'.format(end, page.upper())
+    for p in plan:
+        ov = p.get('overlay')
+        if not ov:
+            continue
+        a, b = p['a'] + 0.15, min(p['b'] + 1.2, total)
+        if ov.startswith('fact'):
+            text, style, pos = facts[int(ov[-1])], 'Fact', r'{\pos(540,1240)\fad(120,160)\fscx92\fscy92\t(0,160,\fscx100\fscy100)}'
+        else:
+            text, style, pos = names[int(ov[4:])], 'Name', r'{\pos(70,1300)\fad(120,160)\move(30,1300,70,1300,0,200)}'
+        txt += 'Dialogue: 2,{},{},{},,0,0,0,,{}{}\n'.format(_ass_time(a), _ass_time(b), style, pos,
+                                                           text.upper().replace('{', '(').replace('}', ')'))
     open(path, 'w').write(txt)
 
 
-MAX_PIECE = 3.5  # seconds: every clip/photo on screen at most this long (user: B-roll under 3-4 s)
+def media_key(m):
+    return m['url'] if m['kind'] == 'photo' else '{}@{}'.format(m['vid'], int(m['t'] // 10))
 
 
-def plan_visuals(timing, total, found):
-    """Cut the voice into pieces of at most MAX_PIECE seconds and give each piece a different real moment;
-    only when the moments run out is one reused, never twice in a row and never more than twice."""
-    pieces = []
-    for i, (a, b) in enumerate(timing):
-        start = 0.0 if i == 0 else a - GAP / 2
-        end = total if i == len(timing) - 1 else timing[i + 1][0] - GAP / 2
-        n = max(1, int(-(-(end - start) // MAX_PIECE)))
-        step = (end - start) / n
-        pieces += [(start + k * step, start + (k + 1) * step) for k in range(n)]
-    out, uses, last = [], {}, None
-    for a, b in pieces:
-        ranked = sorted(found, key=lambda m: uses.get(id(m), 0))
-        for m in ranked:
-            if m is last or uses.get(id(m), 0) >= 2:
-                continue
-            uses[id(m)] = uses.get(id(m), 0) + 1
-            out.append((a, b, m))
-            last = m
-            break
-    return out
-
-
-def build(page, outlets, story, query, subject, tag, work):
-    """Returns {'video', 'caption', 'headline', 'seconds', 'moments'} or {'skip': reason}. Never makes a text-only Reel."""
+def build(page, outlets, story, query, subject, tag, work, used=()):
+    """Returns {'video', 'caption', 'headline', 'seconds', 'moments', 'media_keys'} or {'skip': reason}.
+    Never makes a text-only Reel and never repeats a shot."""
     from . import moments
     os.makedirs(work, exist_ok=True)
     src = '\n\n'.join('[{}] {}\n{}'.format(a['outlet'], a['title'], a['text']) for a in outlets)
@@ -211,45 +309,69 @@ def build(page, outlets, story, query, subject, tag, work):
     if problems:
         return {'skip': 'script: {}'.format(problems)}
     names = [n for n in (s.get('names') or []) if isinstance(n, str)][:4] or ([subject] if subject else [])
-    found = moments.find(story, names, query, os.path.join(work, 'moments'))
-    clips = [m for m in found if m['kind'] == 'clip']
-    if len(found) < 6:  # fewer would mean the same few shots over and over
-        return {'skip': 'only {} real moments found'.format(len(found))}
-    json.dump(dict(s, tag=tag, moments=found), open(os.path.join(work, 'reel_script.json'), 'w'), indent=1)
+    facts = [f for f in (s.get('facts') or []) if isinstance(f, str)][:2]
+    clips_ok = (tag or '').upper() not in moments.SPORTS_TAGS  # sports: photos only (leagues enforce hardest)
+    found = moments.find(story, names, query, os.path.join(work, 'moments'), clips_ok=clips_ok, used=set(used))
     wav, timing, total = voice(s['lines'], work)
     if not 40 <= total <= 70:
         return {'skip': 'voice is {:.0f} s, need 45-60'.format(total)}
-    parts, n = [], 0
-    for a, b, m in plan_visuals(timing, total, found):
-        dur = round(b - a, 2)
-        n += 1
+    pieces = split_pieces(s['lines'], timing, total)
+    if len(found) < len(pieces):
+        return {'skip': '{} different real moments for {} pieces (never repeat a shot)'.format(len(found), len(pieces))}
+    plan = edit_plan(pieces, found, facts, names)
+    if not plan:
+        return {'skip': 'edit plan could not give every piece its own moment'}
+    spare = [m for m in found if all(m is not p['moment'] for p in plan)]
+    rendered = []
+    for n, p in enumerate(plan):
+        m, dur = p['moment'], p['b'] - p['a']
+        nxt = plan[n + 1]['into'] if n + 1 < len(plan) else 'cut'
+        seg_len = dur + JOIN[nxt][1]  # each piece carries the overlap the next join needs
         src_file = None
-        if m['kind'] == 'clip':
-            src_file = moments.cut(m['vid'], m['t'], dur + 0.4, os.path.join(work, 'src{:02d}.mp4'.format(n)))
-        else:
-            src_file = moments.photo(m['url'], os.path.join(work, 'src{:02d}.jpg'.format(n)))
-        if not src_file:  # a moment that cannot be fetched gives its time to the next piece
-            if parts:
-                parts[-1] = (parts[-1][0], parts[-1][1] + dur, parts[-1][2], parts[-1][3])
-            continue
-        parts.append((src_file, dur, m['kind'], n))
-    if len(parts) < 3:
-        return {'skip': 'only {} moments could be fetched'.format(len(parts))}
-    pieces = []
-    for src_file, dur, kind, i in parts:
-        pieces.append(_segment(src_file, kind, dur, os.path.join(work, 'seg{:02d}.mp4'.format(i))))
-    lst = os.path.join(work, 'pieces.txt')
-    open(lst, 'w').write(''.join("file '{}'\n".format(p) for p in pieces))
+        for cand in [m] + spare:  # a moment that cannot be fetched is replaced by an unused one
+            if cand['kind'] == 'clip':
+                src_file = moments.cut(cand['vid'], cand['t'], seg_len + 0.3, os.path.join(work, 'src{:02d}.mp4'.format(n)))
+            else:
+                src_file = moments.photo(cand['url'], os.path.join(work, 'src{:02d}.jpg'.format(n)))
+            if src_file:
+                if cand is not m:
+                    spare.remove(cand)
+                    p['moment'] = cand
+                break
+        if not src_file:
+            return {'skip': 'could not fetch enough moments'}
+        rendered.append(render_piece(src_file, p['moment']['kind'], p['layout'], p['motion'], seg_len,
+                                     os.path.join(work, 'seg{:02d}.mp4'.format(n))))
     ass = os.path.join(work, 'overlay.ass')
     screen = s.get('screen_lines') if len(s.get('screen_lines') or []) == len(s['lines']) else s['lines']
-    _overlay_ass(s['headline'], page, screen, timing, total, ass)
-    video = os.path.join(work, 'reel.mp4')
-    subprocess.run(['nice', '-n', '10', 'ffmpeg', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', lst, '-i', wav,
-                    '-vf', 'subtitles={}:fontsdir={}'.format(ass, FONTS), '-map', '0:v', '-map', '1:a',
-                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-g', str(FPS * 2), '-keyint_min', str(FPS * 2),
-                    '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000', '-shortest', '-movflags', '+faststart', video],
-                   check=True, capture_output=True, timeout=1800)
+    _overlay_ass(s['headline'], page, screen, timing, total, plan, facts, names, ass)
+    video = assemble(rendered, plan, wav, ass, total, os.path.join(work, 'reel.mp4'))
     caption = s['caption'].strip()  # the AI-voice disclosure is Meta's own is_ai_generated flag on publish
     open(os.path.join(work, 'caption.txt'), 'w').write(caption + '\n')
+    json.dump({'script': s, 'plan': plan}, open(os.path.join(work, 'edit.json'), 'w'), indent=1, default=str)
+    kinds = [p['moment']['kind'] for p in plan]
     return {'video': video, 'caption': caption, 'headline': s['headline'], 'seconds': round(total, 1),
-            'moments': '{} clips, {} photos'.format(sum(1 for p in parts if p[2] == 'clip'), sum(1 for p in parts if p[2] != 'clip'))}
+            'moments': '{} clips, {} photos, {} joins: {}'.format(kinds.count('clip'), kinds.count('photo'), len(plan) - 1,
+                                                                    ', '.join('{}x{}'.format(v, [p['into'] for p in plan].count(v)) for v in JOIN)),
+            'media_keys': [media_key(p['moment']) for p in plan]}
+
+
+def assemble(rendered, plan, wav, ass, total, video):
+    """Joins (xfade chain: the join into piece k+1 starts where piece k ends on the final timeline), overlays, voice."""
+    inputs, chain, last, t_end = [], [], '[0:v]', 0.0
+    for f in rendered:
+        inputs += ['-i', f]
+    for k in range(1, len(rendered)):
+        t_end += plan[k - 1]['b'] - plan[k - 1]['a']
+        trans, td = JOIN[plan[k]['into']]
+        out = '[x{}]'.format(k)
+        chain.append('{}[{}:v]xfade=transition={}:duration={:.2f}:offset={:.3f}{}'.format(last, k, trans, td, t_end, out))
+        last = out
+    graph = ';'.join(chain) + (';' if chain else '') + '{}subtitles={}:fontsdir={},format=yuv420p[v]'.format(last, ass, FONTS)
+    subprocess.run(['nice', '-n', '10', 'ffmpeg', '-loglevel', 'error', '-y'] + inputs + ['-i', wav, '-filter_complex', graph,
+                    '-map', '[v]', '-map', '{}:a'.format(len(rendered)), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
+                    '-g', str(FPS * 2), '-keyint_min', str(FPS * 2),  # Meta: closed GOP of 2-5 s
+                    '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000',  # Meta: AAC stereo 48 kHz >= 128 kbps
+                    '-t', '{:.2f}'.format(total), '-movflags', '+faststart', video],
+                   check=True, capture_output=True, timeout=2400)
+    return video

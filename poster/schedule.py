@@ -88,3 +88,12 @@ def mark(slot, record=None, failed=False):
     if record:
         hist = history() + [record]
         _save('posted.json', hist[-500:])
+
+
+def reel_media():
+    """Every clip/photo already shown in a published Reel (never shown again)."""
+    return set(_load('reel_media.json', []))
+
+
+def add_reel_media(keys):
+    _save('reel_media.json', sorted(reel_media() | set(keys)))

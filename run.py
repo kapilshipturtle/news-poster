@@ -218,13 +218,41 @@ def reel_samples(count=2):
             log('  skip (only {} outlets): {}'.format(len(outlets), pick['query']))
             continue
         t0 = time.time()
-        res = reel.build(page, outlets, pick['title'], pick['query'], pick.get('subject'), pick.get('tag', 'NEWS'), work)
+        res = reel.build(page, outlets, pick['title'], pick['query'], pick.get('subject'), pick.get('tag', 'NEWS'), work,
+                         used=schedule.reel_media())
         if res.get('skip'):
             log('  skip ({}): {}'.format(res['skip'], pick['query']))
             continue
         made += 1
         log('REEL {} | {:.0f} s long | built in {:.0f} s | {} -> {}'.format(
             res['headline'], res['seconds'], time.time() - t0, res['moments'], res['video']))
+
+
+def reel_selftest():
+    """Every layout, motion, join and overlay rendered on this machine (about 12 s, silent voice); never published."""
+    from poster import moments, reel
+    import subprocess
+    w = os.path.join(WORK, 'reel-selftest')
+    os.makedirs(w, exist_ok=True)
+    clip1 = moments.cut('-_sUwcKRoCc', 120, 3.6, os.path.join(w, 'c1.mp4'))
+    clip2 = moments.cut('-_sUwcKRoCc', 400, 3.6, os.path.join(w, 'c2.mp4'))
+    photo = moments.photo(sources.wiki_photo('Donald Trump')[0], os.path.join(w, 'p1.jpg'))
+    srcs = [(clip1, 'clip', 'band', 'push_in', 'cut'), (photo, 'photo', 'full', 'pan_left', 'dissolve'),
+            (clip2, 'clip', 'full', 'pull_out', 'flash'), (photo, 'photo', 'band', 'pan_right', 'punch')]
+    plan, rendered, t = [], [], 0.0
+    for n, (f, kind, layout, motion, into) in enumerate(srcs):
+        nxt = srcs[n + 1][4] if n + 1 < len(srcs) else 'cut'
+        plan.append({'a': t, 'b': t + 3.0, 'into': into, 'overlay': ['name0', None, 'fact0', None][n], 'moment': {'kind': kind}})
+        rendered.append(reel.render_piece(f, kind, layout, motion, 3.0 + reel.JOIN[nxt][1], os.path.join(w, 's{}.mp4'.format(n))))
+        t += 3.0
+    wav = os.path.join(w, 'silence.wav')
+    subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', '12', wav], check=True)
+    lines = ['Atlanta just took control of the WNBA Finals.', 'Angel Reese scored 21 points and 12 rebounds.']
+    ass = os.path.join(w, 'o.ass')
+    reel._overlay_ass('Dream take 2-1 lead', 'Dr. Olsson', lines, [(0.25, 5.8), (6.0, 11.6)], 12.0, plan,
+                      ['21 points, 12 rebounds'], ['Angel Reese'], ass)
+    out = reel.assemble(rendered, plan, wav, ass, 12.0, os.path.join(w, 'selftest.mp4'))
+    log('reel selftest ->', out, os.path.getsize(out))
 
 
 def due():
@@ -241,6 +269,9 @@ if __name__ == '__main__':
         due()
     elif cmd == 'reel-samples':
         reel_samples(int(sys.argv[2]) if len(sys.argv) > 2 else 2)
+    elif cmd == 'reel-selftest':
+        load_env()
+        reel_selftest()
     elif cmd == 'selftest':
         selftest()
     elif cmd == 'tick':
