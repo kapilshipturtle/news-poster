@@ -9,7 +9,7 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import ai
+from . import ai, cloud
 from .render import FONTS
 
 VOICE = os.environ.get('REEL_VOICE', 'af_heart')
@@ -523,18 +523,26 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
         if not files[n]:
             return {'skip': 'could not fetch enough moments'}
     stage('fetched {} sources'.format(len(files)))
-    rendered = [render_piece(files[n], p['moment']['kind'], p['layout'], p['motion'], seg_lens[n],
-                             os.path.join(work, 'seg{:02d}.mp4'.format(n)), p['effect'], p['into'] == 'flash')
-                for n, p in enumerate(plan)]
-    stage('rendered pieces')
     ass = os.path.join(work, 'overlay.ass')
     screen = s.get('screen_lines') if len(s.get('screen_lines') or []) == len(s['lines']) else s['lines']
     _overlay_ass(s['headline'], page, screen, timing, total, plan, facts, names, ass, word_times(wav, screen, timing))
-    video = assemble(rendered, plan, wav, ass, total, os.path.join(work, 'reel.mp4'))
-    stage('assembled')
     caption = s['caption'].strip()  # the AI-voice disclosure is Meta's own is_ai_generated flag on publish
     open(os.path.join(work, 'caption.txt'), 'w').write(caption + '\n')
     json.dump({'script': s, 'plan': plan}, open(os.path.join(work, 'edit.json'), 'w'), indent=1, default=str)
+    video = os.path.join(work, 'reel.mp4')
+    tar = cloud.pack(work, plan, files, seg_lens, wav, ass, total, SFX_DIR)
+    if os.environ.get('REEL_RENDER') == 'pack':  # the job is left for a manual Cloud Run render (samples only)
+        return {'skip': 'packed for Cloud Run: {}'.format(tar)}
+    marks = cloud.render(tar, video)
+    if marks:
+        stage('rendered + assembled on Cloud Run ({})'.format(marks))
+    else:
+        rendered = [render_piece(files[n], p['moment']['kind'], p['layout'], p['motion'], seg_lens[n],
+                                 os.path.join(work, 'seg{:02d}.mp4'.format(n)), p['effect'], p['into'] == 'flash')
+                    for n, p in enumerate(plan)]
+        stage('rendered pieces')
+        video = assemble(rendered, plan, wav, ass, total, video)
+        stage('assembled')
     kinds = [p['moment']['kind'] for p in plan]
     return {'video': video, 'caption': caption, 'headline': s['headline'], 'seconds': round(total, 1),
             'moments': '{} clips, {} photos, {} joins: {}'.format(kinds.count('clip'), kinds.count('photo'), len(plan) - 1,

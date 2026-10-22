@@ -11,6 +11,9 @@ Environment=PW_CHANNEL=chrome
 Environment=STATE_DIR=/home/poster/state
 Environment=KOKORO_DIR=/home/poster/models
 Environment=SFX_DIR=/home/poster/sfx
+# renders on Cloud Run (measured 75.9 s vs 1530 s here); falls back to this machine on any failure
+Environment=CLOUD_RENDER_URL=https://news-render-234515853790.us-central1.run.app
+Environment=CLOUD_RENDER_BUCKET=news-poster-1021-31733-render
 # its own lock and -n: a 30-40 min Reel build never blocks the regular posts, and never runs twice at once
 ExecStart=/usr/bin/flock -n /home/poster/state/.reel.lock /home/poster/venv/bin/python run.py reel-tick
 TimeoutStartSec=5400
