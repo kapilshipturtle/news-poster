@@ -57,7 +57,7 @@ Return JSON: {{"tweet_index": <index of the ONE X post that is directly about th
 headline: max 10 words, punchy, factual, plain words, sentence case, no emoji. It goes on the image in big bold letters and must match the story exactly (no clickbait).
 fact: the single most striking concrete detail (a number, a quote fragment, a consequence) in max 12 words, shown under the headline.
 caption:
-- Line 1 (max 12 words): the emotional core. Surprise, stakes, a human detail, relief, outrage that the facts justify. Write it so a scroller stops; do not open with a name and a verb like a wire report.
+- Line 1 (max 12 words): the emotional core. Surprise, stakes, a human detail, relief, outrage that the facts justify. Write it so a scroller stops; do not open with a name and a verb like a wire report. The emotion must come from a REAL detail in the sources: never add imagined scenes or sensory details (no "pounding on doors" unless a source says so).
 - Then 2-3 very short lines in your OWN words: what happened and why it matters to an ordinary American. Plain everyday words, no jargon (say "lung cancer", not "pulmonary adenocarcinoma"). No "according to", no outlet names, no credits.
 - Last line: one specific question people will genuinely disagree about (a choice, a judgment, "would you..."), never a vague one like "how should officials balance...". NEVER engagement bait: no "comment YES", "type 1", "share if", "like if", "tag a friend", "who agrees", no voting by reaction.
 - 35-80 words total. Max 1 emoji, no hashtags, no links, no em dashes. Never use: delve, tapestry, testament, game-changer, buckle up, in a world where, here's the thing, let that sink in, breaking news.
