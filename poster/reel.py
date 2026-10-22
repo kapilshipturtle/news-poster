@@ -14,7 +14,8 @@ MODELS = os.path.expanduser(os.environ.get('KOKORO_DIR', '~/models'))
 FPS = 30
 GAP = 0.22  # pause between spoken lines, seconds
 
-SCRIPT = """You write the voice-over for a 45-60 second vertical news Reel on "{page}", a US Facebook news page.
+SCRIPT = """You write the voice-over for a 45-60 second vertical news Reel for a US Facebook news page (the page name is not part of the story; never mention it).
+The story is whatever the SOURCES below report.
 Use ONLY facts stated in the SOURCES. Never invent numbers, quotes, names, scenes or outcomes.
 If the sources are too thin or contradict each other on the core fact, return {{"skip": "<reason>"}}.
 

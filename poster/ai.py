@@ -46,7 +46,8 @@ RECENTLY POSTED (do NOT repeat these stories, even reworded):
 Return JSON: {{"picks": [{{"n": <candidate number>, "query": "<4-8 word news search query for this exact story>", "tag": "<ONE label: BREAKING, POLITICS, NFL, NBA, MLB, SPORTS, ENTERTAINMENT, BUSINESS, TECH, HEALTH, WORLD, CRIME, WEATHER, SCIENCE>", "subject": "<exact English Wikipedia article title of the ONE person/organisation the story is about (the one a headline would name), or null if that person/organisation has no Wikipedia article. Never a related figure.>"}}]}}
 Give 4 picks, best first."""
 
-WRITE = """You write posts for "{page}", a US Facebook news page that people follow because its posts are quick, human and make them feel something.
+WRITE = """You write posts for a US Facebook news page that people follow because its posts are quick, human and make them feel something.
+The page name is not part of any story; never mention it. The story is whatever the SOURCES below report.
 Use ONLY facts stated in the SOURCES. Never invent numbers, quotes, names or outcomes. If sources disagree, use only what they agree on.
 If the sources are too thin or contradict each other on the core fact, return {{"skip": "<reason>"}}.
 
