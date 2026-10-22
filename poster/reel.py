@@ -471,12 +471,26 @@ SFX_RULES = [  # (priority, trigger, file prefix, lead seconds before the moment
 ]
 
 
+_AUDIBLE = {}
+
+
+def _audible(path):
+    """A silent effect file is skipped and reported (a fade-at-0 conversion once made every effect silent)."""
+    if path not in _AUDIBLE:
+        r = subprocess.run(['ffmpeg', '-hide_banner', '-i', path, '-af', 'volumedetect', '-f', 'null', '-'], capture_output=True, text=True)
+        m = re.search(r'max_volume: (-?[\d.]+|-inf) dB', r.stderr)
+        _AUDIBLE[path] = bool(m) and m.group(1) != '-inf' and float(m.group(1)) > -30
+        if not _AUDIBLE[path]:
+            print('  sound effect is silent, skipped: {}'.format(os.path.basename(path)), flush=True)
+    return _AUDIBLE[path]
+
+
 def sfx_events(plan):
     """Motivated sound effects only (no sound on plain cuts/dissolves), at most SFX_MAX per Reel, SFX_GAP s apart,
     higher-priority moments first; files of one kind rotate so the same sound never repeats back to back."""
     if not os.path.isdir(SFX_DIR):
         return []
-    files = sorted(f for f in os.listdir(SFX_DIR) if f.endswith('.wav'))
+    files = sorted(f for f in os.listdir(SFX_DIR) if f.endswith('.wav') and _audible(os.path.join(SFX_DIR, f)))
     cands = []
     for p in plan:
         if p.get('into') in ('flash', 'punch'):
