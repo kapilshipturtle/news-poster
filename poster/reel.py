@@ -179,7 +179,7 @@ def edit_plan(pieces, found, facts, names):
         out = ai.gemini(EDIT.format(
             pieces='\n'.join('{} | {:.1f} | {}'.format(i, p['b'] - p['a'], p['text']) for i, p in enumerate(pieces)),
             moments='\n'.join('{} | {} | {}'.format(i, m['kind'], m.get('desc', '')) for i, m in enumerate(found)),
-            facts=json.dumps(facts), names=json.dumps(names)), temperature=0.5)
+            facts=json.dumps(facts), names=json.dumps(names)), temperature=0.5, chain='bulk')
         plan = out.get('pieces', []) if isinstance(out, dict) else out
     except Exception:
         plan = []

@@ -1,41 +1,105 @@
 """Gemini (free API): pick the story, choose the X post, write headline + caption."""
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
 
-# pinned, non-Preview models only: Gemini API terms forbid production use of Preview models
-TIMEOUT = int(os.environ.get('GEMINI_TIMEOUT', '60'))  # seconds; typical replies take 5-20 s
-MODELS = os.environ.get('GEMINI_MODELS', 'gemini-3.8-flash,gemini-3.5-flash,gemini-3.5-flash-lite').split(',')
+# Pinned, non-Preview models only (Gemini API terms forbid production use of Preview models).
+# MEASURED 2026-10-22: the free tier gives Gemini 3.8 Flash and 3.5 Flash only 20 requests per day each, so the
+# writing (captions, Reel scripts) gets them; the many background calls (picking, duplicate checks, frame checks,
+# edit plans) use Gemma 4 31B on the same free key (works with JSON and images, ~60-80 s per call).
+CHAINS = {
+    'best': os.environ.get('GEMINI_BEST', 'gemini-3.8-flash,gemini-3.5-flash,gemma-4-31b-it').split(','),
+    'bulk': os.environ.get('GEMINI_BULK', 'gemma-4-31b-it,gemini-3.5-flash-lite').split(','),
+}
+TIMEOUT = int(os.environ.get('GEMINI_TIMEOUT', '60'))  # seconds for Gemini Flash; Gemma gets 3x
 
 
-def gemini(prompt, temperature=0.7):
-    body = json.dumps({'contents': [{'parts': [{'text': prompt}]}],
-                       'generationConfig': {'responseMimeType': 'application/json', 'temperature': temperature}}).encode()
+def _quota_path():
+    from .net import STATE
+    return os.path.join(STATE, 'ai_quota.json')
+
+
+def _exhausted():
+    try:
+        d = json.load(open(_quota_path()))
+    except (OSError, ValueError):
+        return {}
+    return {m: t for m, t in d.items() if t > time.time()}
+
+
+def _mark_exhausted(model, seconds):
+    d = _exhausted()
+    d[model] = time.time() + seconds
+    try:
+        json.dump(d, open(_quota_path(), 'w'))
+    except OSError:
+        pass
+
+
+def _json_from(text):
+    text = text.strip()
+    if text.startswith('```'):
+        text = re.sub(r'^```(json)?|```$', '', text, flags=re.M).strip()
+    try:
+        return json.loads(text)
+    except ValueError:
+        for a, b in (('{', '}'), ('[', ']')):
+            i, j = text.find(a), text.rfind(b)
+            if i != -1 and j > i:
+                try:
+                    return json.loads(text[i:j + 1])
+                except ValueError:
+                    continue
+        raise ValueError('no JSON in the reply')
+
+
+def _call(chain, parts, temperature):
+    """Try each model of the chain: a busy/hung model gets one retry, a model whose DAILY quota is used up is skipped
+    until Google's stated reset (no waiting on it again)."""
     err = None
-    for model in MODELS:
-        url = 'https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}'.format(
-            model.strip(), os.environ['GEMINI_API_KEY'])
-        for attempt in range(3):
+    skip = _exhausted()
+    for model in CHAINS[chain]:
+        model = model.strip()
+        if model in skip:
+            continue
+        gemma = model.startswith('gemma')
+        cfg = {'temperature': temperature}
+        if not gemma:
+            cfg['responseMimeType'] = 'application/json'  # Gemma via this API answers in text; JSON is parsed out
+        body = json.dumps({'contents': [{'parts': parts}], 'generationConfig': cfg}).encode()
+        url = 'https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}'.format(model, os.environ['GEMINI_API_KEY'])
+        for attempt in range(2):
             try:
                 req = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json'})
-                with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                with urllib.request.urlopen(req, timeout=TIMEOUT * (3 if gemma else 1) * (2 if len(parts) > 1 else 1)) as r:
                     d = json.loads(r.read())
-                return json.loads(d['candidates'][0]['content']['parts'][0]['text'])
+                texts = [p_.get('text', '') for p_ in d['candidates'][0]['content']['parts'] if not p_.get('thought')]
+                return _json_from(texts[-1])
             except urllib.error.HTTPError as e:
                 err = e
-                if e.code in (429, 500, 503) and attempt < 2:  # free-tier rate limit / overload: back off
-                    time.sleep(20 * (attempt + 1))
+                body_txt = e.read().decode('utf-8', 'ignore')
+                if e.code == 429 and 'PerDay' in body_txt:
+                    m = re.search(r'"retryDelay":\s*"(\d+)', body_txt)
+                    _mark_exhausted(model, int(m.group(1)) if m else 3600)
+                    break  # daily quota used up: next model at once
+                if e.code in (429, 500, 503) and attempt < 1:
+                    time.sleep(10)
                     continue
-                break  # try the next model
-            except (TimeoutError, OSError, ValueError, KeyError) as e:  # no answer in time / connection drop / empty reply
+                break
+            except (TimeoutError, OSError, ValueError, KeyError, IndexError) as e:
                 err = e
-                if attempt < 1:  # one more try, then the next model: a hung model is usually overloaded for a while
+                if attempt < 1:
                     time.sleep(5)
                     continue
                 break
-    raise err
+    raise err or RuntimeError('every model is out of free quota today')
+
+
+def gemini(prompt, temperature=0.7, chain='best'):
+    return _call(chain, [{'text': prompt}], temperature)
 
 
 PICK = """You run a US Facebook news page. Choose the stories most likely to get Americans reacting, commenting and sharing in the next few hours.
@@ -79,7 +143,7 @@ def pick_stories(cands, recent):
     lines = '\n'.join('{}. {} ({}) | {}'.format(i, len(c['outlets']), ', '.join(c['outlets'][:4]), c['title'])
                       for i, c in enumerate(cands))
     rec = '\n'.join('- ' + r for r in recent) or '- (none yet)'
-    out = gemini(PICK.format(cands=lines, recent=rec), temperature=0.4)
+    out = gemini(PICK.format(cands=lines, recent=rec), temperature=0.4, chain='bulk')
     picks = []
     for p in (out if isinstance(out, list) else out.get('picks', [])):  # lighter models sometimes return the bare list
         if not isinstance(p, dict):
@@ -120,38 +184,14 @@ def same_event(new, recent):
     """Meaning-level duplicate check; returns the matching recent headline or None."""
     if not recent:
         return None
-    out = gemini(SAME.format(new=new, recent='\n'.join('{}. {}'.format(i, r) for i, r in enumerate(recent))), temperature=0)
+    out = gemini(SAME.format(new=new, recent='\n'.join('{}. {}'.format(i, r) for i, r in enumerate(recent))), temperature=0, chain='bulk')
     n = out.get('same_as') if isinstance(out, dict) else None
     return recent[n] if isinstance(n, int) and 0 <= n < len(recent) else None
 
 
-def gemini_vision(prompt, jpegs, temperature=0.2):
-    """Gemini with images (contact sheets): same pinned non-Preview models and retry rules as gemini()."""
+def gemini_vision(prompt, jpegs, temperature=0.2, chain='bulk'):
+    """Gemini/Gemma with images (contact sheets), through the same chain rules as gemini()."""
     import base64
     parts = [{'text': prompt}] + [{'inline_data': {'mime_type': 'image/jpeg', 'data': base64.b64encode(open(j, 'rb').read()).decode()}}
                                   for j in jpegs]
-    body = json.dumps({'contents': [{'parts': parts}],
-                       'generationConfig': {'responseMimeType': 'application/json', 'temperature': temperature}}).encode()
-    err = None
-    for model in MODELS:
-        url = 'https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}'.format(
-            model.strip(), os.environ['GEMINI_API_KEY'])
-        for attempt in range(3):
-            try:
-                req = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json'})
-                with urllib.request.urlopen(req, timeout=TIMEOUT * 2) as r:  # images take longer
-                    d = json.loads(r.read())
-                return json.loads(d['candidates'][0]['content']['parts'][0]['text'])
-            except urllib.error.HTTPError as e:
-                err = e
-                if e.code in (429, 500, 503) and attempt < 2:
-                    time.sleep(20 * (attempt + 1))
-                    continue
-                break
-            except (TimeoutError, OSError, ValueError, KeyError) as e:
-                err = e
-                if attempt < 1:
-                    time.sleep(5)
-                    continue
-                break
-    raise err
+    return _call(chain, parts, temperature)

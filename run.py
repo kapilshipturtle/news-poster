@@ -218,8 +218,12 @@ def reel_samples(count=2):
             log('  skip (only {} outlets): {}'.format(len(outlets), pick['query']))
             continue
         t0 = time.time()
-        res = reel.build(page, outlets, pick['title'], pick['query'], pick.get('subject'), pick.get('tag', 'NEWS'), work,
-                         used=schedule.reel_media())
+        try:
+            res = reel.build(page, outlets, pick['title'], pick['query'], pick.get('subject'), pick.get('tag', 'NEWS'), work,
+                             used=schedule.reel_media())
+        except Exception as e:  # one story failing (e.g. no AI reply) never stops the run: the next story is tried
+            log('  skip (error {}: {}): {}'.format(type(e).__name__, str(e)[:120], pick['query']))
+            continue
         if res.get('skip'):
             log('  skip ({}): {}'.format(res['skip'], pick['query']))
             continue
