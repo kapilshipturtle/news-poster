@@ -217,17 +217,14 @@ def reel_samples(count=2):
         if len(outlets) < 2:
             log('  skip (only {} outlets): {}'.format(len(outlets), pick['query']))
             continue
-        tweets = xembed.capture(embedded, work, min_likes=MIN_LIKES) if embedded else []
-        subject = pick.get('subject')
-        photo = sources.wiki_photo(subject) if subject and dedupe.named_in(subject, pick['title']) else None
         t0 = time.time()
-        res = reel.build(page, outlets, tweets, photo[0] if photo else None, pick.get('tag', 'NEWS'), work)
+        res = reel.build(page, outlets, pick['title'], pick['query'], pick.get('subject'), pick.get('tag', 'NEWS'), work)
         if res.get('skip'):
             log('  skip ({}): {}'.format(res['skip'], pick['query']))
             continue
         made += 1
-        log('REEL {} | {:.0f} s long | built in {:.0f} s | X posts {} | photo {} -> {}'.format(
-            res['headline'], res['seconds'], time.time() - t0, len(tweets), bool(photo), res['video']))
+        log('REEL {} | {:.0f} s long | built in {:.0f} s | {} -> {}'.format(
+            res['headline'], res['seconds'], time.time() - t0, res['moments'], res['video']))
 
 
 def due():

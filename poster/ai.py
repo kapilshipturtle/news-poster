@@ -116,3 +116,29 @@ def same_event(new, recent):
     out = gemini(SAME.format(new=new, recent='\n'.join('{}. {}'.format(i, r) for i, r in enumerate(recent))), temperature=0)
     n = out.get('same_as') if isinstance(out, dict) else None
     return recent[n] if isinstance(n, int) and 0 <= n < len(recent) else None
+
+
+def gemini_vision(prompt, jpegs, temperature=0.2):
+    """Gemini with images (contact sheets): same pinned non-Preview models and retry rules as gemini()."""
+    import base64
+    parts = [{'text': prompt}] + [{'inline_data': {'mime_type': 'image/jpeg', 'data': base64.b64encode(open(j, 'rb').read()).decode()}}
+                                  for j in jpegs]
+    body = json.dumps({'contents': [{'parts': parts}],
+                       'generationConfig': {'responseMimeType': 'application/json', 'temperature': temperature}}).encode()
+    err = None
+    for model in MODELS:
+        url = 'https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}'.format(
+            model.strip(), os.environ['GEMINI_API_KEY'])
+        for attempt in range(3):
+            try:
+                req = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json'})
+                with urllib.request.urlopen(req, timeout=180) as r:
+                    d = json.loads(r.read())
+                return json.loads(d['candidates'][0]['content']['parts'][0]['text'])
+            except urllib.error.HTTPError as e:
+                err = e
+                if e.code in (429, 500, 503) and attempt < 2:
+                    time.sleep(20 * (attempt + 1))
+                    continue
+                break
+    raise err
