@@ -218,8 +218,12 @@ def find(story, names, query, work, want=24, clips_ok=True, used=()):
             index[L] = [{'kind': 'photo', 'url': ph['url'], 'thumb': ph['thumb']} for ph in kept]
     if not sheets:
         return []
-    verdict = ai.gemini_vision(CHECK.format(story=story, names=', '.join(names)) +
-                               '\nSheets in order: ' + ', '.join(index), sheets)
+    verdict, letters = {}, list(index)
+    for k in range(0, len(sheets), 4):  # at most 4 contact sheets per request
+        part = ai.gemini_vision(CHECK.format(story=story, names=', '.join(names)) +
+                                '\nSheets in order: ' + ', '.join(letters[k:k + 4]), sheets[k:k + 4])
+        if isinstance(part, dict):
+            verdict.update(part)
     clips, photos_ok = [], []
     for L, items in index.items():
         marks = verdict.get(L) or {}

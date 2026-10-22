@@ -11,8 +11,11 @@ import urllib.request
 # writing (captions, Reel scripts) gets them; the many background calls (picking, duplicate checks, frame checks,
 # edit plans) use Gemma 4 31B on the same free key (works with JSON and images, ~60-80 s per call).
 CHAINS = {
-    'best': os.environ.get('GEMINI_BEST', 'gemini-3.8-flash,gemini-3.5-flash,gemma-4-31b-it').split(','),
-    'bulk': os.environ.get('GEMINI_BULK', 'gemma-4-31b-it,gemini-3.5-flash-lite').split(','),
+    # 'groq:' models run on GroqCloud's free plan (MEASURED: 1,000 requests/day per model, 8,000 tokens/min;
+    # gpt-oss-120b wrote a 135-word Reel script in 7.5 s, Qwen 3.8 27B read an image in 1.5 s)
+    'best': os.environ.get('AI_BEST', 'gemini-3.8-flash,gemini-3.5-flash,groq:openai/gpt-oss-120b,gemma-4-31b-it').split(','),
+    'bulk': os.environ.get('AI_BULK', 'groq:openai/gpt-oss-120b,groq:qwen/qwen3.8-27b,gemma-4-31b-it').split(','),
+    'vision': os.environ.get('AI_VISION', 'groq:qwen/qwen3.8-27b,gemma-4-31b-it').split(','),
 }
 TIMEOUT = int(os.environ.get('GEMINI_TIMEOUT', '60'))  # seconds for Gemini Flash; Gemma gets 3x
 
@@ -65,6 +68,14 @@ def _call(chain, parts, temperature):
         model = model.strip()
         if model in skip:
             continue
+        if model.startswith('groq:'):
+            if not os.environ.get('GROQ_API_KEY'):
+                continue
+            try:
+                return _groq(model[5:], parts, temperature)
+            except Exception as e:  # noqa: BLE001 - the next model in the chain takes over
+                err = e
+                continue
         gemma = model.startswith('gemma')
         cfg = {'temperature': temperature}
         if not gemma:
@@ -96,6 +107,33 @@ def _call(chain, parts, temperature):
                     continue
                 break
     raise err or RuntimeError('every model is out of free quota today')
+
+
+def _groq(model, parts, temperature):
+    """GroqCloud (OpenAI-compatible). Waits out a per-minute limit (Groq says how long); a used-up DAILY quota marks
+    the model until its reset, like Gemini's."""
+    content = parts[0]['text'] if len(parts) == 1 else [
+        {'type': 'text', 'text': p_['text']} if 'text' in p_ else
+        {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + p_['inline_data']['data']}} for p_ in parts]
+    body = json.dumps({'model': model, 'messages': [{'role': 'user', 'content': content}], 'temperature': temperature,
+                       'response_format': {'type': 'json_object'}}).encode()
+    headers = {'Authorization': 'Bearer ' + os.environ['GROQ_API_KEY'], 'Content-Type': 'application/json',
+               'User-Agent': 'news-poster'}
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request('https://api.groq.com/openai/v1/chat/completions', data=body, headers=headers)
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return _json_from(json.loads(r.read())['choices'][0]['message']['content'])
+        except urllib.error.HTTPError as e:
+            txt = e.read().decode('utf-8', 'ignore')
+            wait = float(e.headers.get('retry-after') or 0)
+            if e.code == 429 and ('per day' in txt.lower() or 'RPD' in txt or wait > 300):
+                _mark_exhausted('groq:' + model, max(wait, 3600))
+                raise
+            if e.code in (429, 500, 503) and attempt < 2:
+                time.sleep(min(max(wait, 3), 65))  # per-minute token/request limit: wait as told
+                continue
+            raise
 
 
 def gemini(prompt, temperature=0.7, chain='best'):
@@ -189,7 +227,7 @@ def same_event(new, recent):
     return recent[n] if isinstance(n, int) and 0 <= n < len(recent) else None
 
 
-def gemini_vision(prompt, jpegs, temperature=0.2, chain='bulk'):
+def gemini_vision(prompt, jpegs, temperature=0.2, chain='vision'):
     """Gemini/Gemma with images (contact sheets), through the same chain rules as gemini()."""
     import base64
     parts = [{'text': prompt}] + [{'inline_data': {'mime_type': 'image/jpeg', 'data': base64.b64encode(open(j, 'rb').read()).decode()}}
