@@ -179,10 +179,12 @@ def find(story, names, query, work, want=24, clips_ok=True, used=()):
     videos.sort(key=lambda v: not v['own'])
     sheets, index = [], {}
     letter = iter('ABCDEFGHIJKL')
-    for v in videos:
+    # storyboards of the first 7 candidates, 3 at a time (each YouTube request still waits its PAUSE turn)
+    with ThreadPoolExecutor(3) as ex:
+        boards = list(ex.map(lambda v: (v, storyboard(v['id'], work)), videos[:7]))
+    for v, frames in boards:
         if len(index) >= 5:
             break
-        frames = storyboard(v['id'], work)
         if not frames:
             continue
         pick = frames[::max(1, len(frames) // 20)][:20]
