@@ -119,15 +119,14 @@ def _page(url):
 def articles(cluster, query, want=3):
     """Fact-check sources (distinct outlets with readable text) + X posts embedded by those newsrooms,
     ranked by how many outlets embedded the same post."""
-    links = [dict(i) for i in cluster['links']]
-    if len({i['outlet'] for i in links}) < 3:
-        links += _gdelt(query)
+    # GDELT always: sports/entertainment/local sites embed X posts far more often than the big feeds
+    links = [dict(i) for i in cluster['links']] + _gdelt(query, n=15)
     seen_url, cands = set(), []
     for l in links:
         if l['url'] not in seen_url:
             seen_url.add(l['url'])
             cands.append(l)
-    cands = cands[:12]
+    cands = cands[:18]
     with ThreadPoolExecutor(6) as ex:
         pages = list(ex.map(lambda c: _page(c['url']), cands))
     outlets, embeds, seen = [], {}, set()
@@ -157,7 +156,8 @@ def wiki_photo(title):
         return None
     meta = info['extmetadata']
     lic = meta.get('LicenseShortName', {}).get('value', '')
-    if not re.match(r'(CC BY|CC0|Public domain|PD)', lic, re.I) or info.get('width', 0) < 600:
+    # public domain / CC0 only: they need no credit line (CC BY would legally require one)
+    if not re.match(r'(CC0|Public domain|PD\b|PDM)', lic, re.I) or info.get('width', 0) < 600:
         return None
     if not urllib.parse.urlparse(src).path.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):  # SVG seals render as a broken box
         return None

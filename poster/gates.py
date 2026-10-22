@@ -19,18 +19,20 @@ def tidy(caption):
 def text_problems(headline, caption):
     p = []
     words = len(caption.split())
-    if not 30 <= words <= 150:
-        p.append('caption is {} words, must be 40-110'.format(words))
+    if not 25 <= words <= 110:
+        p.append('caption is {} words, must be 35-80'.format(words))
     if BAIT.search(caption):
         p.append('engagement bait phrase: "{}"'.format(BAIT.search(caption).group(0)))
     if AI_TELLS.search(caption + ' ' + headline):
         p.append('AI-sounding phrase: "{}"'.format(AI_TELLS.search(caption + ' ' + headline).group(0)))
     if URL.search(caption):
         p.append('caption contains a link')
-    if len(EMOJI.findall(caption)) > 3:
-        p.append('more than 2 emoji')
-    if caption.count('#') > 2:
-        p.append('more than 2 hashtags')
+    if len(EMOJI.findall(caption)) > 2:
+        p.append('more than 1 emoji')
+    if '#' in caption:
+        p.append('hashtags are not allowed')
+    if re.search(r'\baccording to\b', caption, re.I):
+        p.append('no "according to" / outlet credits')
     hw = len(headline.split())
     if not 3 <= hw <= 12:
         p.append('headline is {} words, must be 3-10'.format(hw))

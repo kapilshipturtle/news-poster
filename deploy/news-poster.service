@@ -9,5 +9,5 @@ User=poster
 WorkingDirectory=/home/poster/news-poster
 Environment=PW_CHANNEL=chrome
 Environment=STATE_DIR=/home/poster/state
-ExecStart=/home/poster/venv/bin/python run.py tick
+ExecStart=/usr/bin/flock -w 900 /home/poster/state/.lock /home/poster/venv/bin/python run.py tick
 TimeoutStartSec=1500

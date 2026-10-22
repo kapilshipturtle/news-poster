@@ -8,7 +8,9 @@
 import json
 import os
 import random
+import shutil
 import sys
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
@@ -16,7 +18,7 @@ from poster import ai, dedupe, facebook, gates, instagram, schedule, sources, xe
 from poster.net import WORK, load_env
 from poster.render import render
 
-MIN_LIKES = int(os.environ.get('MIN_TWEET_LIKES', '500'))
+MIN_LIKES = int(os.environ.get('MIN_TWEET_LIKES', '200'))
 
 
 class NoStory(Exception):
@@ -33,6 +35,8 @@ def build(page, work):
     log('trending clusters:', len(cands), '| top:', [(len(c['outlets']), c['title'][:50]) for c in cands[:5]])
     picks = ai.pick_stories(cands, dedupe.recent_headlines())
     log('picks:', [p['title'][:60] for p in picks])
+    # gather sources for the first picks; a story with a usable X post goes first (the page's strongest format)
+    ready = []
     for pick in picks:
         dup = dedupe.story_seen(pick['title'], pick['query'])
         if dup:
@@ -46,7 +50,12 @@ def build(page, work):
         tweets = xembed.capture(ids, work, min_likes=MIN_LIKES) if ids else []
         log('  {} | outlets {} | X posts embedded {} usable {}'.format(
             pick['query'], [o['outlet'] for o in outlets], len(ids), len(tweets)))
+        ready.append((pick, outlets, tweets))
+        if tweets or len(ready) >= 3:
+            break
+    ready.sort(key=lambda r: not r[2])  # stable: X-post stories first, otherwise the trend order
 
+    for pick, outlets, tweets in ready:
         out, problems = None, None
         for _ in range(2):
             out = ai.write_post(page, outlets, tweets, fix=problems)
@@ -76,14 +85,13 @@ def build(page, work):
             if subject and dedupe.named_in(subject, out['headline']) and not dedupe.subject_recent(subject):
                 photo = sources.wiki_photo(subject)
             if photo:
-                (photo_url, credit), kind = photo, 'photo'
-                caption += '\n\n' + credit
+                (photo_url, _credit), kind = photo, 'photo'  # public domain: no credit line needed
             else:
                 kind = random.choice(['typo', 'text'])
         png = None
         if kind != 'text':
             png = render(kind, out['headline'], pick.get('tag', 'NEWS'), page, work,
-                         embed_png=tw['png'] if tw else None, photo_url=photo_url)
+                         embed_png=tw['png'] if tw else None, photo_url=photo_url, fact=out.get('fact'))
             bad = gates.image_problems(png, kind)
             if bad:
                 log('  skip (image: {})'.format(bad))
@@ -94,6 +102,15 @@ def build(page, work):
                 'outlets': [o['url'] for o in outlets], 'tweet_id': tw['id'] if tw else None,
                 'tweet_url': 'https://x.com/{}/status/{}'.format(tw['handle'], tw['id']) if tw else None}
     raise NoStory('no candidate passed every gate')
+
+
+def clean_work(days=3):
+    """Working folders (images, embeds) are only needed for a few days; the VM disk is 30 GB."""
+    cutoff = time.time() - days * 86400
+    for d in os.listdir(WORK) if os.path.isdir(WORK) else []:
+        path = os.path.join(WORK, d)
+        if os.path.isdir(path) and d != 'selftest' and os.path.getmtime(path) < cutoff:
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def tick(dry=False, force=False):
@@ -107,6 +124,7 @@ def tick(dry=False, force=False):
         log('nothing due')
         return
     page = os.environ.get('FB_PAGE_NAME', 'Dr. Olsson')
+    clean_work()
     work = os.path.join(WORK, schedule.now().strftime('%Y%m%d-%H%M%S'))
     os.makedirs(work, exist_ok=True)
     try:
@@ -171,7 +189,7 @@ def selftest():
     os.makedirs(work, exist_ok=True)
     page = os.environ.get('FB_PAGE_NAME', 'Dr. Olsson')
     tw = xembed.capture(['2112678669491544109'], work, min_likes=0, max_age=None)
-    photo = sources.wiki_photo('Elon Musk')
+    photo = sources.wiki_photo('Donald Trump')  # public-domain portrait
     results = {
         'tweet': render('tweet', 'Self test: official X embed', 'TEST', page, work + '/tweet', embed_png=tw[0]['png']) if tw else None,
         'photo': render('photo', 'Self test: free licensed photo', 'TEST', page, work + '/photo', photo_url=photo[0]) if photo else None,
