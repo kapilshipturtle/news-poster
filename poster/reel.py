@@ -82,27 +82,77 @@ def _ass_time(t):
     return '{:d}:{:02d}:{:05.2f}'.format(int(t // 3600), int(t % 3600 // 60), t % 60)
 
 
-def captions(lines, timing, path):
-    """Burned-in captions, 2-4 words at a time, each chunk's time split by its share of the line's letters."""
+def word_times(wav, lines, timing):
+    """Exact start/end of every word: Groq Whisper (free) word timestamps on our own voice track, mapped onto each
+    sentence's words in order. Falls back to splitting each sentence by letters if Whisper is unavailable."""
+    heard = []
+    key = os.environ.get('GROQ_API_KEY')
+    if key:
+        import urllib.request
+        import uuid
+        b = uuid.uuid4().hex
+        mp3 = wav[:-4] + '_asr.mp3'
+        subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-i', wav, '-ac', '1', '-ar', '16000', '-b:a', '48k', mp3], check=True)
+        parts = []
+        for k, v in (('model', 'whisper-large-v3-turbo'), ('response_format', 'verbose_json'), ('timestamp_granularities[]', 'word'),
+                     ('language', 'en')):
+            parts.append('--{}\r\nContent-Disposition: form-data; name="{}"\r\n\r\n{}\r\n'.format(b, k, v).encode())
+        parts.append('--{}\r\nContent-Disposition: form-data; name="file"; filename="voice.mp3"\r\nContent-Type: audio/mpeg\r\n\r\n'.format(b).encode()
+                     + open(mp3, 'rb').read() + b'\r\n')
+        try:
+            req = urllib.request.Request('https://api.groq.com/openai/v1/audio/transcriptions',
+                                         data=b''.join(parts) + '--{}--\r\n'.format(b).encode(),
+                                         headers={'Authorization': 'Bearer ' + key, 'User-Agent': 'news-poster',
+                                                  'Content-Type': 'multipart/form-data; boundary=' + b})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                heard = [(w['start'], w['end']) for w in json.loads(r.read()).get('words', [])]
+        except Exception as e:  # noqa: BLE001 - timing falls back to the letter split
+            print('  whisper timing unavailable ({}), using letter split'.format(type(e).__name__), flush=True)
+    out = []
+    for line, (a, b_) in zip(lines, timing):
+        ws = line.split()
+        inside = [h for h in heard if h[0] >= a - 0.15 and h[1] <= b_ + 0.15]
+        if inside:
+            # same count or not, each screen word takes the heard word at its relative position
+            spans = [inside[min(len(inside) - 1, int(i * len(inside) / len(ws)))] for i in range(len(ws))]
+            spans = [(max(a, s_), min(b_, e_)) for s_, e_ in spans]
+        else:
+            n = sum(len(w) + 1 for w in ws) or 1
+            t, spans = a, []
+            for w in ws:
+                d = (b_ - a) * (len(w) + 1) / n
+                spans.append((t, t + d))
+                t += d
+        out.append(list(zip(ws, spans)))
+    return out
+
+
+def captions(lines, timing, path, words=None):
+    """Word-by-word highlighted captions (the most used short-form style): 2-3 words on screen, the spoken word in
+    yellow and a touch bigger, white bold Montserrat Black with a black outline, in the lower third above Facebook's
+    buttons. A group pops in when it starts."""
+    if not words:
+        words = [list(zip(l.split(), _even_split(l, t))) for l, t in zip(lines, timing)]
     ev = []
-    for line, (a, b) in zip(lines, timing):
-        words = line.split()
-        chunks, cur = [], []
-        for w in words:
-            cur.append(w)
-            if len(cur) >= 3 or (len(cur) >= 2 and w[-1] in ',.?!:;'):
-                chunks.append(cur)
+    for line_words in words:
+        groups, cur = [], []
+        for w, sp in line_words:
+            cur.append((w, sp))
+            if len(cur) >= 3 or (len(cur) >= 2 and w[-1] in ',.?!:;') or sum(len(x) + 1 for x, _ in cur) > 15:  # one line, no wrap
+                groups.append(cur)
                 cur = []
         if cur:
-            chunks.append(cur)
-        total = sum(len(' '.join(c)) for c in chunks)
-        t = a
-        for c in chunks:
-            d = (b - a) * len(' '.join(c)) / total
-            text = ' '.join(c).upper().replace('{', '(').replace('}', ')')
-            ev.append('Dialogue: 0,{},{},Cap,,0,0,0,,{}'.format(_ass_time(t), _ass_time(t + d), text))
-            t += d
-    open(path, 'w').write('''[Script Info]
+            groups.append(cur)
+        for g in groups:
+            g_start, g_end = g[0][1][0], g[-1][1][1]
+            for k, (w, (s_, e_)) in enumerate(g):
+                start = g_start if k == 0 else s_
+                end = g_end if k == len(g) - 1 else g[k + 1][1][0]
+                text = ' '.join(('{\\1c&H00F2FF&\\fscx112\\fscy112}' + _cap(x) + '{\\1c&HFFFFFF&\\fscx100\\fscy100}') if j == k else _cap(x)
+                                for j, (x, _) in enumerate(g))
+                pop = '{\\fscx85\\fscy85\\t(0,90,\\fscx100\\fscy100)}' if k == 0 else ''
+                ev.append('Dialogue: 0,{},{},Cap,,0,0,0,,{}{}'.format(_ass_time(start), _ass_time(max(end, start + 0.05)), pop, text))
+    open(path, 'w').write("""[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
 PlayResY: 1920
@@ -110,11 +160,27 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Cap,Anton,104,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,1,0,1,8,3,2,60,60,300,1
+Style: Cap,Montserrat Black,118,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,0,0,0,0,100,100,0,0,1,8,4,2,60,60,480,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-''' + '\n'.join(ev) + '\n')
+""" + '\n'.join(ev) + '\n')
+
+
+def _cap(word):
+    return word.upper().replace('{', '(').replace('}', ')')  # a brace would start an ASS override block
+
+
+def _even_split(line, span):
+    a, b_ = span
+    ws = line.split()
+    n = sum(len(w) + 1 for w in ws) or 1
+    t, out = a, []
+    for w in ws:
+        d = (b_ - a) * (len(w) + 1) / n
+        out.append((t, t + d))
+        t += d
+    return out
 
 
 MEDIA_TOP, MEDIA_H = 600, 760  # band layout: the picture band; the headline sits above it, the captions below
@@ -273,28 +339,22 @@ def render_piece(src, kind, layout, motion, dur, out):
     return out
 
 
-def _overlay_ass(headline, page, lines, timing, total, plan, facts, names, path):
-    """Captions, the headline (top), the page name (bottom), fact boxes and name titles where the edit put them."""
-    captions(lines, timing, path)
+def _overlay_ass(headline, page, lines, timing, total, plan, facts, names, path, words=None):
+    """Captions plus the fact boxes and name titles where the edit put them (user: no headline, no page name)."""
+    captions(lines, timing, path, words)
     txt = open(path).read()
-    txt = txt.replace('Style: Cap,Anton,104,', 'Style: Head,Anton,96,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,1,0,1,7,3,8,70,70,170,1\n'
-                      'Style: Brand,Anton,48,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,2,0,1,4,2,2,60,60,90,1\n'
-                      'Style: Fact,Anton,96,&H00FFFFFF,&H00FFFFFF,&H002E1DE1,&H002E1DE1,0,0,0,0,100,100,1,0,3,18,0,5,80,80,0,1\n'
+    txt = txt.replace('Style: Cap,', 'Style: Fact,Anton,96,&H00FFFFFF,&H00FFFFFF,&H002E1DE1,&H002E1DE1,0,0,0,0,100,100,1,0,3,18,0,5,80,80,0,1\n'
                       'Style: Name,Anton,86,&H000B0B0B,&H000B0B0B,&H00FFFFFF,&H00FFFFFF,0,0,0,0,100,100,1,0,3,14,0,1,70,70,0,1\n'
-                      'Style: Cap,Anton,104,')
-    txt = txt.replace(',2,60,60,300,1', ',2,60,60,330,1')
-    end = _ass_time(total)
-    txt += 'Dialogue: 1,0:00:00.00,{},Head,,0,0,0,,{}\n'.format(end, headline.upper().replace('{', '(').replace('}', ')'))
-    txt += 'Dialogue: 1,0:00:00.00,{},Brand,,0,0,0,,{}\n'.format(end, page.upper())
+                      'Style: Cap,')
     for p in plan:
         ov = p.get('overlay')
         if not ov:
             continue
         a, b = p['a'] + 0.15, min(p['b'] + 1.2, total)
         if ov.startswith('fact'):
-            text, style, pos = facts[int(ov[-1])], 'Fact', r'{\pos(540,1240)\fad(120,160)\fscx92\fscy92\t(0,160,\fscx100\fscy100)}'
+            text, style, pos = facts[int(ov[-1])], 'Fact', r'{\pos(540,520)\fad(120,160)\fscx92\fscy92\t(0,160,\fscx100\fscy100)}'
         else:
-            text, style, pos = names[int(ov[4:])], 'Name', r'{\pos(70,1300)\fad(120,160)\move(30,1300,70,1300,0,200)}'
+            text, style, pos = names[int(ov[4:])], 'Name', r'{\pos(70,1250)\fad(120,160)\move(30,1250,70,1250,0,200)}'
         txt += 'Dialogue: 2,{},{},{},,0,0,0,,{}{}\n'.format(_ass_time(a), _ass_time(b), style, pos,
                                                            text.upper().replace('{', '(').replace('}', ')'))
     open(path, 'w').write(txt)
@@ -388,7 +448,7 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
     stage('rendered pieces')
     ass = os.path.join(work, 'overlay.ass')
     screen = s.get('screen_lines') if len(s.get('screen_lines') or []) == len(s['lines']) else s['lines']
-    _overlay_ass(s['headline'], page, screen, timing, total, plan, facts, names, ass)
+    _overlay_ass(s['headline'], page, screen, timing, total, plan, facts, names, ass, word_times(wav, screen, timing))
     video = assemble(rendered, plan, wav, ass, total, os.path.join(work, 'reel.mp4'))
     stage('assembled')
     caption = s['caption'].strip()  # the AI-voice disclosure is Meta's own is_ai_generated flag on publish
