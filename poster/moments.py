@@ -8,9 +8,11 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 from . import ai
 
@@ -44,11 +46,15 @@ context shots: arrivals, crowds, places, buildings, press events, people reactin
 Return JSON: {{"<sheet letter>": {{"<number>": {{"keep": true|false, "desc": "what it shows, <= 12 words"}}}}}} for every number."""
 
 
+_pace = threading.Lock()
+
+
 def _yt(args, timeout=120):
-    wait = PAUSE - (time.time() - _last[0])
-    if wait > 0:
-        time.sleep(wait)
-    _last[0] = time.time()
+    with _pace:  # parallel downloads still start at least PAUSE seconds apart
+        wait = PAUSE - (time.time() - _last[0])
+        if wait > 0:
+            time.sleep(wait)
+        _last[0] = time.time()
     return subprocess.run([YTDLP, '--no-warnings'] + args, capture_output=True, text=True, timeout=timeout)
 
 
@@ -194,15 +200,16 @@ def find(story, names, query, work, want=24, clips_ok=True, used=()):
     for chunk in (photos[:20], photos[20:40]):
         if not chunk:
             continue
-        thumbs, kept = [], []
-        for ph in chunk:
+        def thumb(ph):
             try:
                 raw = urllib.request.urlopen(urllib.request.Request(ph['thumb'], headers={'User-Agent': BING_HEADERS['User-Agent']}),
                                              timeout=15).read()
-                thumbs.append(Image.open(io.BytesIO(raw)).convert('RGB'))
-                kept.append(ph)
+                return ph, Image.open(io.BytesIO(raw)).convert('RGB')
             except Exception:
-                continue
+                return ph, None
+        with ThreadPoolExecutor(8) as ex:  # thumbnails in parallel (network-bound)
+            got = [(ph, im) for ph, im in ex.map(thumb, chunk) if im is not None]
+        kept, thumbs = [g[0] for g in got], [g[1] for g in got]
         if thumbs:
             L = next(letter)
             path = os.path.join(work, 'sheet_{}.jpg'.format(L))

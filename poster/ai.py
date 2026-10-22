@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 
 # pinned, non-Preview models only: Gemini API terms forbid production use of Preview models
+TIMEOUT = int(os.environ.get('GEMINI_TIMEOUT', '60'))  # seconds; typical replies take 5-20 s
 MODELS = os.environ.get('GEMINI_MODELS', 'gemini-3.8-flash,gemini-3.5-flash,gemini-3.5-flash-lite').split(',')
 
 
@@ -19,7 +20,7 @@ def gemini(prompt, temperature=0.7):
         for attempt in range(3):
             try:
                 req = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json'})
-                with urllib.request.urlopen(req, timeout=120) as r:
+                with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                     d = json.loads(r.read())
                 return json.loads(d['candidates'][0]['content']['parts'][0]['text'])
             except urllib.error.HTTPError as e:
@@ -30,8 +31,8 @@ def gemini(prompt, temperature=0.7):
                 break  # try the next model
             except (TimeoutError, OSError, ValueError, KeyError) as e:  # no answer in time / connection drop / empty reply
                 err = e
-                if attempt < 2:
-                    time.sleep(15 * (attempt + 1))
+                if attempt < 1:  # one more try, then the next model: a hung model is usually overloaded for a while
+                    time.sleep(5)
                     continue
                 break
     raise err
@@ -138,7 +139,7 @@ def gemini_vision(prompt, jpegs, temperature=0.2):
         for attempt in range(3):
             try:
                 req = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json'})
-                with urllib.request.urlopen(req, timeout=180) as r:
+                with urllib.request.urlopen(req, timeout=TIMEOUT * 2) as r:  # images take longer
                     d = json.loads(r.read())
                 return json.loads(d['candidates'][0]['content']['parts'][0]['text'])
             except urllib.error.HTTPError as e:
@@ -149,8 +150,8 @@ def gemini_vision(prompt, jpegs, temperature=0.2):
                 break
             except (TimeoutError, OSError, ValueError, KeyError) as e:
                 err = e
-                if attempt < 2:
-                    time.sleep(15 * (attempt + 1))
+                if attempt < 1:
+                    time.sleep(5)
                     continue
                 break
     raise err

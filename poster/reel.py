@@ -6,6 +6,8 @@ import json
 import os
 import re
 import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 from . import ai
 from .render import FONTS
@@ -292,6 +294,10 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
     """Returns {'video', 'caption', 'headline', 'seconds', 'moments', 'media_keys'} or {'skip': reason}.
     Never makes a text-only Reel and never repeats a shot."""
     from . import moments
+    t0 = [time.time()]
+
+    def stage(name):  # how long every step took, so a slowdown is always visible in the log
+        print('  [{:5.0f} s] {}'.format(time.time() - t0[0], name), flush=True)
     os.makedirs(work, exist_ok=True)
     src = '\n\n'.join('[{}] {}\n{}'.format(a['outlet'], a['title'], a['text']) for a in outlets)
     s, problems = None, None
@@ -313,8 +319,14 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
     names = [n for n in (s.get('names') or []) if isinstance(n, str)][:4] or ([subject] if subject else [])
     facts = [f for f in (s.get('facts') or []) if isinstance(f, str)][:2]
     clips_ok = (tag or '').upper() not in moments.SPORTS_TAGS  # sports: photos only (leagues enforce hardest)
-    found = moments.find(story, names, query, os.path.join(work, 'moments'), clips_ok=clips_ok, used=set(used))
-    wav, timing, total = voice(s['lines'], work)
+    stage('script')
+    # the voice (CPU) is recorded while the moments are searched and checked (network + AI): same result, less waiting
+    with ThreadPoolExecutor(1) as ex:
+        v = ex.submit(voice, s['lines'], work)
+        found = moments.find(story, names, query, os.path.join(work, 'moments'), clips_ok=clips_ok, used=set(used))
+        stage('moments ({})'.format(len(found)))
+        wav, timing, total = v.result()
+    stage('voice ({:.0f} s)'.format(total))
     if not 40 <= total <= 70:
         return {'skip': 'voice is {:.0f} s, need 45-60'.format(total)}
     pieces = split_pieces(s['lines'], timing, total)
@@ -323,31 +335,37 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
     plan = edit_plan(pieces, found, facts, names)
     if not plan:
         return {'skip': 'edit plan could not give every piece its own moment'}
+    stage('edit plan ({} pieces)'.format(len(plan)))
     spare = [m for m in found if all(m is not p['moment'] for p in plan)]
-    rendered = []
+    seg_lens = []
     for n, p in enumerate(plan):
-        m, dur = p['moment'], p['b'] - p['a']
         nxt = plan[n + 1]['into'] if n + 1 < len(plan) else 'cut'
-        seg_len = dur + JOIN[nxt][1]  # each piece carries the overlap the next join needs
-        src_file = None
-        for cand in [m] + spare:  # a moment that cannot be fetched is replaced by an unused one
-            if cand['kind'] == 'clip':
-                src_file = moments.cut(cand['vid'], cand['t'], seg_len + 0.3, os.path.join(work, 'src{:02d}.mp4'.format(n)))
-            else:
-                src_file = moments.photo(cand['url'], os.path.join(work, 'src{:02d}.jpg'.format(n)))
-            if src_file:
-                if cand is not m:
-                    spare.remove(cand)
-                    p['moment'] = cand
-                break
-        if not src_file:
+        seg_lens.append(p['b'] - p['a'] + JOIN[nxt][1])  # each piece carries the overlap the next join needs
+
+    def fetch(n, m):
+        if m['kind'] == 'clip':
+            return moments.cut(m['vid'], m['t'], seg_lens[n] + 0.3, os.path.join(work, 'src{:02d}.mp4'.format(n)))
+        return moments.photo(m['url'], os.path.join(work, 'src{:02d}.jpg'.format(n)))
+
+    with ThreadPoolExecutor(3) as ex:  # 3 downloads at a time (YouTube pacing still applies per request)
+        files = list(ex.map(lambda n: fetch(n, plan[n]['moment']), range(len(plan))))
+    for n, p in enumerate(plan):  # a moment that could not be fetched is replaced by an unused one
+        while not files[n] and spare:
+            cand = spare.pop(0)
+            files[n] = fetch(n, cand)
+            if files[n]:
+                p['moment'] = cand
+        if not files[n]:
             return {'skip': 'could not fetch enough moments'}
-        rendered.append(render_piece(src_file, p['moment']['kind'], p['layout'], p['motion'], seg_len,
-                                     os.path.join(work, 'seg{:02d}.mp4'.format(n))))
+    stage('fetched {} sources'.format(len(files)))
+    rendered = [render_piece(files[n], p['moment']['kind'], p['layout'], p['motion'], seg_lens[n],
+                             os.path.join(work, 'seg{:02d}.mp4'.format(n))) for n, p in enumerate(plan)]
+    stage('rendered pieces')
     ass = os.path.join(work, 'overlay.ass')
     screen = s.get('screen_lines') if len(s.get('screen_lines') or []) == len(s['lines']) else s['lines']
     _overlay_ass(s['headline'], page, screen, timing, total, plan, facts, names, ass)
     video = assemble(rendered, plan, wav, ass, total, os.path.join(work, 'reel.mp4'))
+    stage('assembled')
     caption = s['caption'].strip()  # the AI-voice disclosure is Meta's own is_ai_generated flag on publish
     open(os.path.join(work, 'caption.txt'), 'w').write(caption + '\n')
     json.dump({'script': s, 'plan': plan}, open(os.path.join(work, 'edit.json'), 'w'), indent=1, default=str)
