@@ -1,0 +1,15 @@
+[Unit]
+Description=news-poster Reels: publish a ready Reel when a random Reel time is due, then build ahead
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=poster
+WorkingDirectory=/home/poster/news-poster
+Environment=PW_CHANNEL=chrome
+Environment=STATE_DIR=/home/poster/state
+Environment=KOKORO_DIR=/home/poster/models
+# its own lock and -n: a 30-40 min Reel build never blocks the regular posts, and never runs twice at once
+ExecStart=/usr/bin/flock -n /home/poster/state/.reel.lock /home/poster/venv/bin/python run.py reel-tick
+TimeoutStartSec=5400

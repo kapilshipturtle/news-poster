@@ -259,6 +259,78 @@ def reel_selftest():
     log('reel selftest ->', out, os.path.getsize(out))
 
 
+def reel_build_one():
+    """Keep up to 2 finished Reels ready (built ahead so build time never delays a post)."""
+    import shutil
+    from poster import reel
+    load_env()
+    if schedule.braked() or schedule.reel_braked() or len(schedule.reel_queue()) >= 2:
+        return
+    page = os.environ.get('FB_PAGE_NAME', 'Dr. Olsson')
+    clean_work()
+    recent = [h['headline'] for h in schedule.reel_history()[-30:]] + [q['headline'] for q in schedule.reel_queue()]
+    picks = ai.pick_stories(sources.trending(), recent)
+    for pick in picks:
+        if any(dedupe._overlap(dedupe.words(pick['title']), dedupe.words(r)) >= dedupe.LIMIT for r in recent):
+            continue  # this story already has a Reel (a Reel on a story that was also a photo post is fine)
+        work = os.path.join(WORK, 'reel-' + schedule.now().strftime('%Y%m%d-%H%M%S'))
+        os.makedirs(work, exist_ok=True)
+        outlets, _ = sources.articles(pick['cluster'], pick['query'])
+        if len(outlets) < 2:
+            continue
+        try:
+            res = reel.build(page, outlets, pick['title'], pick['query'], pick.get('subject'), pick.get('tag', 'NEWS'), work,
+                             used=schedule.reel_media() | {k for q in schedule.reel_queue() for k in q.get('media_keys', [])})
+        except Exception as e:  # one story failing never stops the builder
+            log('  reel skip (error {}: {})'.format(type(e).__name__, str(e)[:120]))
+            continue
+        if res.get('skip'):
+            log('  reel skip ({}): {}'.format(res['skip'], pick['query']))
+            continue
+        dest = os.path.join(schedule.REEL_QUEUE, os.path.basename(work))
+        os.makedirs(dest, exist_ok=True)
+        shutil.copy(res['video'], os.path.join(dest, 'reel.mp4'))
+        json.dump({'built': schedule.now().isoformat(), 'headline': res['headline'], 'caption': res['caption'],
+                   'seconds': res['seconds'], 'media_keys': res['media_keys'], 'title': pick['title'], 'query': pick['query']},
+                  open(os.path.join(dest, 'meta.json'), 'w'), indent=1)
+        log('REEL READY', res['headline'], res['moments'])
+        return
+
+
+def reel_tick():
+    """Publish the oldest ready Reel when one of today's random Reel times is due; then build ahead if needed."""
+    import shutil
+    load_env()
+    slot = schedule.reel_due_slot()
+    queue = schedule.reel_queue()
+    if slot and queue:
+        r = queue[0]
+        tok = os.environ['FB_PAGE_TOKEN']
+        try:
+            vid = facebook.publish_reel(os.environ['FB_PAGE_ID'], tok, os.path.join(r['dir'], 'reel.mp4'), r['caption'])
+            status = {}
+            for _ in range(40):  # Meta processes the upload; wait for the publishing result
+                time.sleep(15)
+                status = facebook.reel_status(vid, tok).get('status', {})
+                if status.get('video_status') in ('ready', 'error') or (status.get('publishing_phase') or {}).get('status') in ('complete', 'error'):
+                    break
+        except facebook.FacebookError as e:
+            log('REEL FACEBOOK ERROR:', e)
+            schedule.reel_brake(48 if e.blocked else 6, str(e))
+            return
+        bad = status.get('video_status') == 'error' or (status.get('publishing_phase') or {}).get('status') == 'error' \
+            or (status.get('processing_phase') or {}).get('status') == 'error'
+        if bad:  # Meta rejected or flagged it (copyright included): Reels pause for 48 h
+            schedule.reel_brake(48, 'reel status: {}'.format(json.dumps(status)[:300]))
+            log('REEL REJECTED, Reels paused 48 h:', json.dumps(status)[:300])
+        schedule.add_reel_media(r['media_keys'])
+        schedule.reel_mark(slot, {'time': schedule.now().isoformat(), 'slot': slot, 'video_id': vid, 'headline': r['headline'],
+                                  'title': r['title'], 'status': status})
+        shutil.rmtree(r['dir'], ignore_errors=True)
+        log('REEL PUBLISHED', vid, r['headline'])
+    reel_build_one()
+
+
 def due():
     load_env()
     d = bool(schedule.due_slot())
@@ -273,6 +345,8 @@ if __name__ == '__main__':
         due()
     elif cmd == 'reel-samples':
         reel_samples(int(sys.argv[2]) if len(sys.argv) > 2 else 2)
+    elif cmd == 'reel-tick':
+        reel_tick()
     elif cmd == 'reel-selftest':
         load_env()
         reel_selftest()

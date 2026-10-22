@@ -97,3 +97,74 @@ def reel_media():
 
 def add_reel_media(keys):
     _save('reel_media.json', sorted(reel_media() | set(keys)))
+
+
+# ---- Reels: their own random daily times, a ready queue and their own brake --------------------------------------
+REELS_PER_DAY = int(os.environ.get('REELS_PER_DAY', '10'))
+REEL_QUEUE = os.path.join(STATE, 'reel_queue')
+REEL_MAX_AGE = timedelta(hours=6)  # a ready Reel older than this is stale news and is thrown away
+
+
+def reel_plan():
+    plan = _load('reel_schedule.json', {})
+    day = now().date().isoformat()
+    if plan.get('day') != day:
+        start = datetime(now().year, now().month, now().day, tzinfo=timezone.utc)
+        rng = random.Random('reels-{}-{}'.format(day, os.environ.get('FB_PAGE_ID', '')))
+        while True:
+            mins = sorted(rng.uniform(0, 24 * 60) for _ in range(REELS_PER_DAY))
+            if all(b - a >= 60 for a, b in zip(mins, mins[1:])):  # Reels at least an hour apart
+                break
+        plan = {'day': day, 'slots': [(start + timedelta(minutes=m)).isoformat() for m in mins], 'done': []}
+        _save('reel_schedule.json', plan)
+    return plan
+
+
+def reel_braked():
+    b = _load('reel_brake.json', {})
+    return b if b.get('until') and datetime.fromisoformat(b['until']) > now() else None
+
+
+def reel_brake(hours, reason):
+    _save('reel_brake.json', {'until': (now() + timedelta(hours=hours)).isoformat(), 'reason': reason, 'set': now().isoformat()})
+
+
+def reel_history():
+    return _load('reels_posted.json', [])
+
+
+def reel_due_slot():
+    if braked() or reel_braked():
+        return None
+    plan = reel_plan()
+    if sum(1 for h in reel_history() if h['time'][:10] == plan['day']) >= REELS_PER_DAY:
+        return None
+    for s in plan['slots']:
+        t = datetime.fromisoformat(s)
+        if s not in plan['done'] and now() - STALE <= t <= now():
+            return s
+    return None
+
+
+def reel_queue():
+    """Ready Reels, oldest first; stale ones are deleted."""
+    import shutil
+    os.makedirs(REEL_QUEUE, exist_ok=True)
+    out = []
+    for d in sorted(os.listdir(REEL_QUEUE)):
+        meta = os.path.join(REEL_QUEUE, d, 'meta.json')
+        if not os.path.exists(meta):
+            continue
+        m = json.load(open(meta))
+        if now() - datetime.fromisoformat(m['built']) > REEL_MAX_AGE:
+            shutil.rmtree(os.path.join(REEL_QUEUE, d), ignore_errors=True)
+            continue
+        out.append(dict(m, dir=os.path.join(REEL_QUEUE, d)))
+    return out
+
+
+def reel_mark(slot, record):
+    plan = reel_plan()
+    plan['done'].append(slot)
+    _save('reel_schedule.json', plan)
+    _save('reels_posted.json', (reel_history() + [record])[-500:])
