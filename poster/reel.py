@@ -19,7 +19,7 @@ The story is whatever the SOURCES below report.
 Use ONLY facts stated in the SOURCES. Never invent numbers, quotes, names, scenes or outcomes.
 If the sources are too thin or contradict each other on the core fact, return {{"skip": "<reason>"}}.
 
-Return JSON: {{"headline": str, "lines": [str, ...], "facts": [str, str], "names": [str], "caption": str}}
+Return JSON: {{"headline": str, "lines": [str, ...], "screen_lines": [str, ...], "facts": [str, str], "names": [str], "caption": str}}
 - lines: 9 to 13 spoken sentences, 120-150 words in total, each at most 16 words. Written for the ear: short, clear,
   contractions, plain everyday words, no jargon, no abbreviations a narrator would stumble on (write "percent", "million").
   The lines are the VOICE: spell numbers out for the ear there.
@@ -29,6 +29,7 @@ Return JSON: {{"headline": str, "lines": [str, ...], "facts": [str, str], "names
 - headline: max 7 words, punchy, factual, shown at the top of the screen the whole time. Use DIGITS and symbols here ($25 billion, 97-71), never spelled-out numbers.
 - facts: two striking concrete details from the sources, max 9 words each, digits as in the headline.
 - names: the people, places and organisations the story is about, exactly as the sources write them (max 4).
+- screen_lines: the SAME lines, same count and order, but written for the screen: numbers as digits ($25 billion, 21 points, 97-71).
 - caption: the Reel's description, 15-40 words, emotional but factual, no hashtags, no credits, no links.
 No em dashes. Never use: delve, tapestry, testament, game-changer, buckle up, let that sink in, breaking news.
 
@@ -162,28 +163,29 @@ def _overlay_ass(headline, page, lines, timing, total, path):
     open(path, 'w').write(txt)
 
 
+MAX_PIECE = 3.5  # seconds: every clip/photo on screen at most this long (user: B-roll under 3-4 s)
+
+
 def plan_visuals(timing, total, found):
-    """One real moment per spoken line (two for a line longer than 5.5 s); a moment is used at most twice."""
+    """Cut the voice into pieces of at most MAX_PIECE seconds and give each piece a different real moment;
+    only when the moments run out is one reused, never twice in a row and never more than twice."""
     pieces = []
     for i, (a, b) in enumerate(timing):
         start = 0.0 if i == 0 else a - GAP / 2
         end = total if i == len(timing) - 1 else timing[i + 1][0] - GAP / 2
-        if end - start > 5.5:
-            mid = (start + end) / 2
-            pieces += [(start, mid), (mid, end)]
-        else:
-            pieces.append((start, end))
-    out, uses = [], {}
-    k = 0
+        n = max(1, int(-(-(end - start) // MAX_PIECE)))
+        step = (end - start) / n
+        pieces += [(start + k * step, start + (k + 1) * step) for k in range(n)]
+    out, uses, last = [], {}, None
     for a, b in pieces:
-        for _ in range(len(found)):
-            m = found[k % len(found)]
-            k += 1
-            key = m.get('vid', m.get('url')) + str(m.get('t', ''))
-            if uses.get(key, 0) < 2:
-                uses[key] = uses.get(key, 0) + 1
-                out.append((a, b, m))
-                break
+        ranked = sorted(found, key=lambda m: uses.get(id(m), 0))
+        for m in ranked:
+            if m is last or uses.get(id(m), 0) >= 2:
+                continue
+            uses[id(m)] = uses.get(id(m), 0) + 1
+            out.append((a, b, m))
+            last = m
+            break
     return out
 
 
@@ -193,10 +195,11 @@ def build(page, outlets, story, query, subject, tag, work):
     os.makedirs(work, exist_ok=True)
     src = '\n\n'.join('[{}] {}\n{}'.format(a['outlet'], a['title'], a['text']) for a in outlets)
     s, problems = None, None
-    for _ in range(2):
+    for _ in range(3):
         prompt = SCRIPT.format(sources=src)
         if problems:
-            prompt += '\n\nYOUR PREVIOUS SCRIPT WAS REJECTED FOR: {}. Fix exactly these problems.'.format('; '.join(problems))
+            prompt += ('\n\nYOUR PREVIOUS SCRIPT WAS REJECTED FOR: {}. Fix exactly these problems. Count the words: the lines '
+                       'together must have 120 to 150 words; add context, stakes and what happens next from the sources.').format('; '.join(problems))
         s = ai.gemini(prompt)
         if isinstance(s, list):
             s = s[0] if s and isinstance(s[0], dict) else {'skip': 'no script'}
@@ -210,7 +213,7 @@ def build(page, outlets, story, query, subject, tag, work):
     names = [n for n in (s.get('names') or []) if isinstance(n, str)][:4] or ([subject] if subject else [])
     found = moments.find(story, names, query, os.path.join(work, 'moments'))
     clips = [m for m in found if m['kind'] == 'clip']
-    if len(found) < 3:
+    if len(found) < 6:  # fewer would mean the same few shots over and over
         return {'skip': 'only {} real moments found'.format(len(found))}
     json.dump(dict(s, tag=tag, moments=found), open(os.path.join(work, 'reel_script.json'), 'w'), indent=1)
     wav, timing, total = voice(s['lines'], work)
@@ -222,7 +225,7 @@ def build(page, outlets, story, query, subject, tag, work):
         n += 1
         src_file = None
         if m['kind'] == 'clip':
-            src_file = moments.cut(m['vid'], m['t'], min(dur + 0.6, 6.0), os.path.join(work, 'src{:02d}.mp4'.format(n)))
+            src_file = moments.cut(m['vid'], m['t'], dur + 0.4, os.path.join(work, 'src{:02d}.mp4'.format(n)))
         else:
             src_file = moments.photo(m['url'], os.path.join(work, 'src{:02d}.jpg'.format(n)))
         if not src_file:  # a moment that cannot be fetched gives its time to the next piece
@@ -238,7 +241,8 @@ def build(page, outlets, story, query, subject, tag, work):
     lst = os.path.join(work, 'pieces.txt')
     open(lst, 'w').write(''.join("file '{}'\n".format(p) for p in pieces))
     ass = os.path.join(work, 'overlay.ass')
-    _overlay_ass(s['headline'], page, s['lines'], timing, total, ass)
+    screen = s.get('screen_lines') if len(s.get('screen_lines') or []) == len(s['lines']) else s['lines']
+    _overlay_ass(s['headline'], page, screen, timing, total, ass)
     video = os.path.join(work, 'reel.mp4')
     subprocess.run(['nice', '-n', '10', 'ffmpeg', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', lst, '-i', wav,
                     '-vf', 'subtitles={}:fontsdir={}'.format(ass, FONTS), '-map', '0:v', '-map', '1:a',

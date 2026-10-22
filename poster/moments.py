@@ -73,6 +73,9 @@ def storyboard(vid, work):
         j = json.loads(r.stdout)
     except ValueError:
         return []
+    w, h = j.get('width') or 0, j.get('height') or 0
+    if w and h and w / h < 1.5:  # B-roll must be wide (16:9); vertical and square videos are skipped
+        return []
     sb = [f for f in j.get('formats') or [] if str(f.get('format_id', '')).startswith('sb')]
     if not sb:
         return []
@@ -126,7 +129,7 @@ def bing_images(query, n=24):
         except ValueError:
             continue
         w, h = (int(wh.group(1)), int(wh.group(2))) if wh else (0, 0)
-        if d.get('murl') and d.get('turl') and w >= 900:
+        if d.get('murl') and d.get('turl') and w >= 900 and h and w / h >= 1.45:  # landscape, close to 16:9
             rows.append({'url': d['murl'], 'thumb': d['turl'], 'w': w, 'h': h})
     return rows[:n]
 
@@ -147,14 +150,24 @@ def _sheet(items, path, label):
     return label
 
 
-def find(story, names, query, work, want=8):
-    """Checked real moments: [{'kind': 'clip', 'vid', 't', 'desc'} | {'kind': 'photo', 'url', 'desc'}], clips first."""
+def find(story, names, query, work, want=18):
+    """Checked real moments from up to 5 different wide videos (at most 2 from one video, 20+ s apart) and Bing photos,
+    returned clip/photo alternating so no single source dominates the Reel."""
     from PIL import Image
     os.makedirs(work, exist_ok=True)
     words = [w.lower() for n in names for w in re.findall(r'[A-Za-z]+', n)]
+    videos, seen = [], set()
+    for q in [query] + ['{} {}'.format(n, query.split()[0]) for n in names[:2]]:
+        for v in yt_search(q, words):
+            if v['id'] not in seen:
+                seen.add(v['id'])
+                videos.append(v)
+    videos.sort(key=lambda v: not v['own'])
     sheets, index = [], {}
     letter = iter('ABCDEFGHIJKL')
-    for v in yt_search(query, words)[:3]:
+    for v in videos:
+        if len(index) >= 5:
+            break
         frames = storyboard(v['id'], work)
         if not frames:
             continue
@@ -185,21 +198,28 @@ def find(story, names, query, work, want=8):
         return []
     verdict = ai.gemini_vision(CHECK.format(story=story, names=', '.join(names)) +
                                '\nSheets in order: ' + ', '.join(index), sheets)
-    good = []
+    clips, photos_ok = [], []
     for L, items in index.items():
         marks = verdict.get(L) or {}
-        last_t = -99
+        taken = []
         for i, item in enumerate(items):
             m = marks.get(str(i + 1)) or {}
             if not m.get('keep'):
                 continue
             if item['kind'] == 'clip':
-                if item['t'] - last_t < 8:  # neighbouring storyboard frames are the same shot
+                if len(taken) >= 2 or any(abs(item['t'] - t) < 20 for t in taken):  # variety: 2 per video, 20 s apart
                     continue
-                last_t = item['t']
-            good.append(dict(item, desc=m.get('desc', '')))
-    good.sort(key=lambda g: g['kind'] != 'clip')
-    return good[:want]
+                taken.append(item['t'])
+                clips.append(dict(item, desc=m.get('desc', '')))
+            else:
+                photos_ok.append(dict(item, desc=m.get('desc', '')))
+    out = []
+    while clips or photos_ok:  # alternate, starting with a clip
+        if clips:
+            out.append(clips.pop(0))
+        if photos_ok:
+            out.append(photos_ok.pop(0))
+    return out[:want]
 
 
 def cut(vid, t, dur, out):
