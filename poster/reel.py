@@ -208,7 +208,8 @@ def edit_plan(pieces, found, facts, names):
 def _motion_crop(motion, w, h, frames):
     """A crop window that moves over a picture pre-scaled 12% larger than (w, h): the camera move of a piece."""
     W, H = _even(w * 1.12), _even(h * 1.12)
-    f = 'min(n/{},1)'.format(max(1, frames - 1))
+    N = max(1, frames - 1)
+    f = 'min(n/{},1)'.format(N)  # crop's frame counter is n; zoompan's is on
     x, y = '(iw-ow)/2', '(ih-oh)/2'
     if motion == 'pan_left':
         x = '(iw-ow)*(1-{})'.format(f)
@@ -216,7 +217,8 @@ def _motion_crop(motion, w, h, frames):
         x = '(iw-ow)*{}'.format(f)
     if motion in ('push_in', 'pull_out'):
         # zoompan keeps the frame size while the zoom changes; works per frame on clips (d=1) and stills alike
-        z = '1+0.10*{}'.format(f.replace('n', 'on')) if motion == 'push_in' else '1.10-0.10*{}'.format(f.replace('n', 'on'))
+        fo = 'min(on/{},1)'.format(N)
+        z = '1+0.10*{}'.format(fo) if motion == 'push_in' else '1.10-0.10*{}'.format(fo)
         return 'scale={}:{},zoompan=z=\'{}\':x=\'iw/2-(iw/zoom/2)\':y=\'ih/2-(ih/zoom/2)\':d=1:s={}x{}:fps=30'.format(W, H, z, w, h)
     return "scale={}:{},crop={}:{}:x='{}':y='{}'".format(W, H, w, h, x, y)
 
