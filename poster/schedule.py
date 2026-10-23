@@ -103,6 +103,10 @@ def add_reel_media(keys):
 REELS_PER_DAY = int(os.environ.get('REELS_PER_DAY', '10'))
 REEL_QUEUE = os.path.join(STATE, 'reel_queue')
 REEL_MAX_AGE = timedelta(hours=6)  # a ready Reel older than this is stale news and is thrown away
+# when in the UTC day Reels may go out (minutes from 00:00 UTC) and how far apart; defaults = the US Page's settings.
+# Hindi Page: 07:00-23:30 IST = REEL_WINDOW=90-1080, REEL_GAP_MIN=45 (12 slots fit; 60 would rarely fit in 16.5 h)
+REEL_WINDOW = tuple(int(x) for x in os.environ.get('REEL_WINDOW', '0-1440').split('-'))
+REEL_GAP = int(os.environ.get('REEL_GAP_MIN', '60'))
 
 
 def reel_plan():
@@ -112,8 +116,8 @@ def reel_plan():
         start = datetime(now().year, now().month, now().day, tzinfo=timezone.utc)
         rng = random.Random('reels-{}-{}'.format(day, os.environ.get('FB_PAGE_ID', '')))
         while True:
-            mins = sorted(rng.uniform(0, 24 * 60) for _ in range(REELS_PER_DAY))
-            if all(b - a >= 60 for a, b in zip(mins, mins[1:])):  # Reels at least an hour apart
+            mins = sorted(rng.uniform(*REEL_WINDOW) for _ in range(REELS_PER_DAY))
+            if all(b - a >= REEL_GAP for a, b in zip(mins, mins[1:])):  # Reels at least REEL_GAP minutes apart
                 break
         plan = {'day': day, 'slots': [(start + timedelta(minutes=m)).isoformat() for m in mins], 'done': []}
         _save('reel_schedule.json', plan)

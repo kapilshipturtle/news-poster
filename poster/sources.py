@@ -38,6 +38,7 @@ FEEDS = {
 }
 ATOM = '{http://www.w3.org/2005/Atom}'
 MAX_AGE_H = 12
+REQUIRE_DATE = False  # a profile with a strict freshness rule drops feed items that carry no date
 TWEET = re.compile(r'(?:twitter|x)\.com/([A-Za-z0-9_]{1,15})/status(?:es)?/(\d{10,20})')
 _last_gdelt = [0.0]
 
@@ -60,7 +61,7 @@ def _feed(name_url):
             age = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
         except Exception:
             age = None
-        if title and link and (age is None or age <= MAX_AGE_H):
+        if title and link and ((age is None and not REQUIRE_DATE) or (age is not None and age <= MAX_AGE_H)):
             out.append({'outlet': name, 'title': html.unescape(title), 'url': link.strip(), 'age_h': age})
     return out
 

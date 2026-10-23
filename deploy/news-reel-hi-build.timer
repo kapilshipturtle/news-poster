@@ -1,0 +1,10 @@
+[Unit]
+Description=Indian Daily News: every 5 minutes, build a Reel when fewer than 2 are ready
+
+[Timer]
+OnCalendar=*:0/5
+RandomizedDelaySec=60
+Persistent=false
+
+[Install]
+WantedBy=timers.target

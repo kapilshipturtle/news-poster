@@ -199,7 +199,10 @@ EFFECTS = {
     'lens_sweep': ('a diagonal light glint passing once', 'a glossy event, red carpet, an arrival'),
 }
 # measured news channels: hard cuts are 71-97 % of joins, dissolves/flashes/punches are accents (news_brain.SHARED)
+VOICE_SECONDS = (40, 70)  # the voice's accepted length (a profile may change it)
+SCRIPT_WORDS = '120 to 150'  # the word range a rejected script is told to fix (a profile may change it)
 MAX_JOINS, MAX_EFFECTS = 4, 4  # per Reel: ~18 joins, so 4 accents keeps 78 % cuts; effects never two pieces in a row
+VERIFY = None  # optional fn(plan, files, spare, fetch, names) -> files or None, run once all pictures are fetched
 
 EDIT = """You are the editor of a fast, well-edited vertical news Reel (like the best US news pages). The voice-over is fixed and
 cut into short pieces. For EACH piece choose:
@@ -397,9 +400,10 @@ def _fx(effect, flash_in, dur, folder):
     return inp, g + ',format=yuv420p[v]'
 
 
-def render_piece(src, kind, layout, motion, dur, out, effect=None, flash_in=False):
+def render_piece(src, kind, layout, motion, dur, out, effect=None, flash_in=False, cx=None):
     """One 1080x1920 piece. band: picture across the middle over a blurred, darkened copy; full: fills the frame.
-    effect: one of EFFECTS on the finished piece; flash_in: the piece arrives by a flash join (a warm leak burns out)."""
+    effect: one of EFFECTS on the finished piece; flash_in: the piece arrives by a flash join (a warm leak burns out).
+    cx: where the subject is across a wide picture (0-1, from the vision check): a full-screen crop keeps it in frame."""
     frames = max(2, int(round(dur * FPS)))
     if kind == 'clip':
         inp = ['-i', src]
@@ -408,7 +412,12 @@ def render_piece(src, kind, layout, motion, dur, out, effect=None, flash_in=Fals
         inp = ['-loop', '1', '-framerate', '30', '-t', '{:.2f}'.format(dur + 0.1), '-i', src]
         pre = 'fps=30'
     if layout == 'full':
-        graph = ('[0:v]{pre},scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,{mv},'
+        try:
+            cx = min(1.0, max(0.0, float(cx))) if cx is not None else None
+        except (TypeError, ValueError):
+            cx = None
+        xs = "max(0,min(iw-ow,iw*{:.3f}-ow/2))".format(cx) if cx is not None else '(iw-ow)/2'
+        graph = ('[0:v]{pre},scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:x=\'' + xs + '\':y=(ih-oh)/2,{mv},'
                  'eq=brightness=-0.05,trim=duration={d:.2f},setpts=PTS-STARTPTS[base]').format(
             pre=pre, mv=_motion_crop(motion, 1080, 1920, frames), d=dur)
     else:
@@ -473,7 +482,8 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
         prompt = SCRIPT.format(sources=src)
         if problems:
             prompt += ('\n\nYOUR PREVIOUS SCRIPT WAS REJECTED FOR: {}. Fix exactly these problems. Count the words: the lines '
-                       'together must have 120 to 150 words; add context, stakes and what happens next from the sources.').format('; '.join(problems))
+                       'together must have {} words (too short: add context, stakes and what happens next from the sources; '
+                       'too long: cut the least important details).').format('; '.join(problems), SCRIPT_WORDS)
         s = ai.gemini(prompt)
         if isinstance(s, list):
             s = s[0] if s and isinstance(s[0], dict) else {'skip': 'no script'}
@@ -500,8 +510,8 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
         stage('moments ({})'.format(len(found)))
         wav, timing, total = v.result()
     stage('voice ({:.0f} s)'.format(total))
-    if not 40 <= total <= 70:
-        return {'skip': 'voice is {:.0f} s, need 45-60'.format(total)}
+    if not VOICE_SECONDS[0] <= total <= VOICE_SECONDS[1]:
+        return {'skip': 'voice is {:.0f} s, need {}-{}'.format(total, *VOICE_SECONDS)}
     pieces = split_pieces(s['lines'], timing, total)
     if len(found) < len(pieces):
         return {'skip': '{} different real moments for {} pieces (never repeat a shot)'.format(len(found), len(pieces))}
@@ -516,15 +526,21 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
         seg_lens.append(p['b'] - p['a'] + JOIN[nxt][1])  # each piece carries the overlap the next join needs
 
     def fetch(n, m):
-        if m['kind'] == 'clip':
-            f = moments.cut(m['vid'], m['t'], seg_lens[n] + 0.3, os.path.join(work, 'src{:02d}.mp4'.format(n)))
-        else:
-            f = moments.photo(m['url'], os.path.join(work, 'src{:02d}.jpg'.format(n)))
-        if f and moments.text_heavy(f):  # someone else's subtitles/article text: swapped for another moment
-            print('  text-heavy, replaced: {}'.format(m.get('desc', '')[:60]), flush=True)
-            os.remove(f)
+        try:
+            if m['kind'] == 'clip':
+                f = moments.cut(m['vid'], m['t'], seg_lens[n] + 0.3, os.path.join(work, 'src{:02d}.mp4'.format(n)))
+            else:
+                f = moments.photo(m['url'], os.path.join(work, 'src{:02d}.jpg'.format(n)))
+            if f and moments.text_heavy(f):  # someone else's subtitles/article text: swapped for another moment
+                print('  text-heavy, replaced: {}'.format(m.get('desc', '')[:60]), flush=True)
+                os.remove(f)
+                return None
+            return f
+        except (OSError, subprocess.SubprocessError) as e:  # one picture's file trouble drops that picture, not the Reel
+            import traceback
+            print('  source {} dropped ({}: {})'.format(n, type(e).__name__, str(e)[:120]), flush=True)
+            traceback.print_exc()
             return None
-        return f
 
     with ThreadPoolExecutor(3) as ex:  # 3 downloads at a time (YouTube pacing still applies per request)
         files = list(ex.map(lambda n: fetch(n, plan[n]['moment']), range(len(plan))))
@@ -537,6 +553,11 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
         if not files[n]:
             return {'skip': 'could not fetch enough moments'}
     stage('fetched {} sources'.format(len(files)))
+    if VERIFY:  # a profile's final look at every picture together (PROFILE=hi); the US Page sets none
+        files = VERIFY(plan, files, spare, fetch, names)
+        if not files:
+            return {'skip': 'pictures failed the final check and no spares were left'}
+        stage('final picture check passed')
     ass = os.path.join(work, 'overlay.ass')
     screen = s.get('screen_lines') if len(s.get('screen_lines') or []) == len(s['lines']) else s['lines']
     _overlay_ass(s['headline'], page, screen, timing, total, plan, facts, names, ass, word_times(wav, screen, timing))
@@ -552,7 +573,8 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
         stage('rendered + assembled on Cloud Run ({})'.format(marks))
     else:
         rendered = [render_piece(files[n], p['moment']['kind'], p['layout'], p['motion'], seg_lens[n],
-                                 os.path.join(work, 'seg{:02d}.mp4'.format(n)), p['effect'], p['into'] == 'flash')
+                                 os.path.join(work, 'seg{:02d}.mp4'.format(n)), p['effect'], p['into'] == 'flash',
+                                 p['moment'].get('cx'))
                     for n, p in enumerate(plan)]
         stage('rendered pieces')
         video = assemble(rendered, plan, wav, ass, total, video)

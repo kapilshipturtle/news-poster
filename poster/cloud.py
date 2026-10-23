@@ -41,7 +41,7 @@ def _gcs(method, name, path=None):
 def pack(work, plan, files, seg_lens, wav, ass, total, sfx_dir):
     """<work>/in.tar.gz: the sources, voice, captions, sound effects and job.json the worker renders from."""
     pieces = [{'src': os.path.basename(f), 'kind': p['moment']['kind'], 'layout': p['layout'], 'motion': p['motion'],
-               'seconds': seg_lens[n], 'effect': p.get('effect'), 'flash_in': p['into'] == 'flash'}
+               'seconds': seg_lens[n], 'effect': p.get('effect'), 'flash_in': p['into'] == 'flash', 'cx': p['moment'].get('cx')}
               for n, (p, f) in enumerate(zip(plan, files))]
     job = os.path.join(work, 'job.json')
     json.dump({'pieces': pieces, 'plan': plan, 'total': total}, open(job, 'w'), default=str)

@@ -1,0 +1,29 @@
+[Unit]
+Description=Indian Daily News (Hindi) Reels: publish the oldest ready Reel when a random Reel time is due
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=poster
+WorkingDirectory=/home/poster/news-poster
+Environment=PW_CHANNEL=chrome
+Environment=STATE_DIR=/home/poster/state-hi
+Environment=PROFILE=hi
+# user 2026-10-24: Hindi 12 Reels/day, 07:00-23:30 IST (01:30-18:00 UTC), at least 45 min apart
+Environment=REELS_PER_DAY=12
+Environment=REEL_WINDOW=90-1080
+Environment=REEL_GAP_MIN=45
+# its own free AI pools, so the two Pages never starve each other (US uses Groq + Gemini Flash)
+Environment=AI_BEST=gemini-3.5-flash-lite,gemma-4-31b-it
+Environment=AI_BULK=gemini-3.5-flash-lite,gemma-4-31b-it
+Environment=AI_VISION=gemini-3.5-flash-lite,gemma-4-31b-it
+Environment=FISH_KEY_FILE=/home/poster/.fish_api_key
+Environment=KOKORO_DIR=/home/poster/models
+Environment=SFX_DIR=/home/poster/sfx
+# renders on Cloud Run (measured 75.9 s vs 1530 s here); falls back to this machine on any failure
+Environment=CLOUD_RENDER_URL=https://news-render-234515853790.us-central1.run.app
+Environment=CLOUD_RENDER_BUCKET=news-poster-1021-31733-render
+# separate from the builder, so a due Reel goes out even while the next one is building
+ExecStart=/usr/bin/flock -n /home/poster/state-hi/.reelpub.lock /home/poster/venv/bin/python run.py reel-publish
+TimeoutStartSec=1800

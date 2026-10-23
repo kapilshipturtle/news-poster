@@ -7,7 +7,7 @@ if ! swapon --show | grep -q /swapfile; then   # e2-micro has 1 GB RAM; Chrome n
 fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
-apt-get install -y -q python3 python3-venv git wget fonts-noto-color-emoji ffmpeg tesseract-ocr
+apt-get install -y -q python3 python3-venv git wget fonts-noto-color-emoji ffmpeg tesseract-ocr tesseract-ocr-hin tesseract-ocr-pan
 if ! command -v google-chrome >/dev/null; then
   wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/chrome.deb
   apt-get install -y -q /tmp/chrome.deb && rm /tmp/chrome.deb
@@ -30,5 +30,8 @@ install -m 644 /home/poster/news-poster/deploy/news-reel.service /etc/systemd/sy
 install -m 644 /home/poster/news-poster/deploy/news-reel.timer /etc/systemd/system/news-reel.timer
 install -m 644 /home/poster/news-poster/deploy/news-reel-build.service /etc/systemd/system/news-reel-build.service
 install -m 644 /home/poster/news-poster/deploy/news-reel-build.timer /etc/systemd/system/news-reel-build.timer
+for u in news-reel-hi.service news-reel-hi.timer news-reel-hi-build.service news-reel-hi-build.timer; do
+  install -m 644 /home/poster/news-poster/deploy/$u /etc/systemd/system/$u
+done
 systemctl daemon-reload
 echo "setup done; enable with: systemctl enable --now news-poster.timer news-reel.timer news-reel-build.timer"

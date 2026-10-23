@@ -48,7 +48,7 @@ def render(bucket, job):
     with ThreadPoolExecutor(WORKERS) as ex:
         rendered = list(ex.map(lambda kv: reel.render_piece(work + '/' + kv[1]['src'], kv[1]['kind'], kv[1]['layout'], kv[1]['motion'],
                                                             kv[1]['seconds'], '{}/seg{:02d}.mp4'.format(work, kv[0]),
-                                                            kv[1].get('effect'), kv[1].get('flash_in', False)),
+                                                            kv[1].get('effect'), kv[1].get('flash_in', False), kv[1].get('cx')),
                                enumerate(spec['pieces'])))
     marks['render_pieces_s'] = round(time.time() - t1, 1)
     t2 = time.time()

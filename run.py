@@ -19,6 +19,10 @@ from poster import ai, dedupe, facebook, gates, instagram, schedule, sources, xe
 from poster.net import WORK, load_env
 from poster.render import render
 
+if os.environ.get('PROFILE') == 'hi':  # the Hindi Page (Indian Daily News): same engine, poster/hindi.py switches the rest
+    from poster import hindi
+    load_env = hindi.load_env  # noqa: F811 - its own Page id/token in place of the US Page's
+
 MIN_LIKES = int(os.environ.get('MIN_TWEET_LIKES', '200'))
 
 

@@ -26,6 +26,12 @@ STRICT = re.compile(r'(?i)\b(nfl|mlb|nba|wnba|nhl|mls|ufc|wwe|fifa|uefa|premier 
                     r'warner bros|disney|marvel|pixar|netflix|hbo|max|paramount|universal pictures|sony pictures|lionsgate|a24|'
                     r'vevo|records|music|official music video|trailer)\b')
 SPORTS_TAGS = {'NFL', 'NBA', 'MLB', 'NHL', 'WNBA', 'SPORTS', 'SOCCER', 'UFC'}  # sports stories use photos only
+# Picture shape. US Reels: wide sources only, shown as a band. A profile that fills the phone screen (Hindi) sets
+# WIDE_ONLY = False: vertical videos/tall photos are taken too and come first (PREFER_VERTICAL), and wide ones are later
+# cropped around the subject the vision check locates ('cx').
+WIDE_ONLY, PREFER_VERTICAL = True, False
+MAX_VIDEOS, PER_VIDEO = 5, 2  # clips: from at most this many videos, at most this many moments each
+AR = {}  # video id -> width/height, from its storyboard metadata
 _last = [0.0]
 BING_HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -88,7 +94,9 @@ def storyboard(vid, work):
     except ValueError:
         return []
     w, h = j.get('width') or 0, j.get('height') or 0
-    if w and h and w / h < 1.5:  # B-roll must be wide (16:9); vertical and square videos are skipped
+    if w and h:
+        AR[vid] = w / h
+    if w and h and w / h < 1.5 and (WIDE_ONLY or w / h > 0.8):  # wide (16:9) B-roll; a full-screen profile also takes vertical
         return []
     sb = [f for f in j.get('formats') or [] if str(f.get('format_id', '')).startswith('sb')]
     if not sb:
@@ -122,9 +130,12 @@ def storyboard(vid, work):
     return frames
 
 
-def bing_images(query, n=24):
-    """Real photos from Bing images (no browser): [{url, thumb, w, h}] of at least 900 px wide."""
-    qs = urllib.parse.urlencode({'q': query, 'first': 1, 'count': 35, 'qft': '+filterui:aspect-wide', 'mmasync': 1})
+def bing_images(query, n=24, tall=False):
+    """Real photos from Bing images (no browser): [{url, thumb, w, h}] of at least 900 px wide (wide) or 1200 px tall
+    with height/width >= 1.3 (tall, for a full-screen profile)."""
+    big = '' if WIDE_ONLY else '+filterui:imagesize-large'  # full screen: wide photos must be 1080+ px high to crop well
+    qs = urllib.parse.urlencode({'q': query, 'first': 1, 'count': 35, 'qft': '+filterui:aspect-' + ('tall' if tall else 'wide') + big,
+                                 'mmasync': 1})
     req = urllib.request.Request('https://www.bing.com/images/async?' + qs, headers=dict(
         BING_HEADERS, Referer='https://www.bing.com/images/search?q=' + urllib.parse.quote_plus(query)))
     try:
@@ -146,7 +157,9 @@ def bing_images(query, n=24):
         host = urllib.parse.urlparse(d.get('murl', '')).netloc.lower()
         if any(x in host for x in ('ytimg.com', 'ggpht.com', 'yt3.', 'fbsbx.com', 'tiktokcdn')):
             continue  # other channels' video thumbnails: big stylised text the word count cannot see
-        if d.get('murl') and d.get('turl') and w >= 900 and h and w / h >= 1.45:  # landscape, close to 16:9
+        # tall; or close to 16:9 (and 1080+ px high when it will be cropped to the full phone screen)
+        ok = (h >= 1200 and w and h / w >= 1.3) if tall else (w >= 900 and h and w / h >= 1.45 and (WIDE_ONLY or h >= 1080))
+        if d.get('murl') and d.get('turl') and ok:
             rows.append({'url': d['murl'], 'thumb': d['turl'], 'w': w, 'h': h})
     return rows[:n]
 
@@ -160,7 +173,11 @@ def _sheet(items, path, label):
     dr = ImageDraw.Draw(sheet)
     for i, im in enumerate(items):
         x, y = (i % 5) * cw, (i // 5) * ch
-        sheet.paste(im.resize((cw, ch)), (x, y))
+        if im.height > im.width:  # a tall picture is shown whole (not squashed) so the check sees it as it is
+            k = ch / im.height
+            sheet.paste(im.resize((max(1, int(im.width * k)), ch)), (x + (cw - int(im.width * k)) // 2, y))
+        else:
+            sheet.paste(im.resize((cw, ch)), (x, y))
         dr.rectangle([x, y, x + 34, y + 24], fill='black')
         dr.text((x + 6, y + 5), str(i + 1), fill='yellow')
     sheet.save(path, quality=85)
@@ -186,7 +203,7 @@ def find(story, names, query, work, want=24, clips_ok=True, used=()):
     with ThreadPoolExecutor(3) as ex:
         boards = list(ex.map(lambda v: (v, storyboard(v['id'], work)), videos[:7]))
     for v, frames in boards:
-        if len(index) >= 5:
+        if len(index) >= MAX_VIDEOS:
             break
         if not frames:
             continue
@@ -195,14 +212,18 @@ def find(story, names, query, work, want=24, clips_ok=True, used=()):
         path = os.path.join(work, 'sheet_{}.jpg'.format(L))
         _sheet([Image.open(p) for _, p in pick], path, L)
         sheets.append(path)
-        index[L] = [{'kind': 'clip', 'vid': v['id'], 't': t, 'channel': v['channel']} for t, _ in pick]
+        index[L] = [{'kind': 'clip', 'vid': v['id'], 't': t, 'channel': v['channel'], 'ar': AR.get(v['id'])} for t, _ in pick]
     photos, seen_url = [], set(used)
-    for q in [query] + names[:3]:  # several searches: enough different photos so nothing has to repeat
-        for ph in bing_images(q):
+    searches = [(q, False) for q in [query] + names[:3]]  # several searches: enough different photos so nothing repeats
+    if not WIDE_ONLY:  # full screen: tall photos first
+        searches = [(q, True) for q in [query] + names[:2]] + searches
+    for q, tall in searches:
+        for ph in bing_images(q, tall=tall):
             if ph['url'] not in seen_url:
                 seen_url.add(ph['url'])
                 photos.append(ph)
-    for chunk in (photos[:20], photos[20:40]):
+    # full screen: a 3rd batch (tall Bing results for Indian politics are often text posters, refused later by OCR)
+    for chunk in (photos[:20], photos[20:40]) + (() if WIDE_ONLY else (photos[40:60],)):
         if not chunk:
             continue
         def thumb(ph):
@@ -220,7 +241,7 @@ def find(story, names, query, work, want=24, clips_ok=True, used=()):
             path = os.path.join(work, 'sheet_{}.jpg'.format(L))
             _sheet(thumbs, path, L)
             sheets.append(path)
-            index[L] = [{'kind': 'photo', 'url': ph['url'], 'thumb': ph['thumb']} for ph in kept]
+            index[L] = [{'kind': 'photo', 'url': ph['url'], 'thumb': ph['thumb'], 'ar': ph['w'] / ph['h']} for ph in kept]
     if not sheets:
         return []
     verdict, letters = {}, list(index)
@@ -238,14 +259,17 @@ def find(story, names, query, work, want=24, clips_ok=True, used=()):
             if not m.get('keep'):
                 continue
             if item['kind'] == 'clip':
-                if len(taken) >= 2 or any(abs(item['t'] - t) < 20 for t in taken):  # variety: 2 per video, 20 s apart
+                if len(taken) >= PER_VIDEO or any(abs(item['t'] - t) < 20 for t in taken):  # variety: few per video, 20 s apart
                     continue
                 if '{}@{}'.format(item['vid'], int(item['t'] // 10)) in used:  # shown in an earlier Reel
                     continue
                 taken.append(item['t'])
-                clips.append(dict(item, desc=m.get('desc', '')))
+                clips.append(dict(item, desc=m.get('desc', ''), cx=m.get('x')))
             else:
-                photos_ok.append(dict(item, desc=m.get('desc', '')))
+                photos_ok.append(dict(item, desc=m.get('desc', ''), cx=m.get('x')))
+    if PREFER_VERTICAL:  # native full-screen pictures first, wide ones (cropped later) after
+        clips.sort(key=lambda it: (it.get('ar') or 2) >= 1)
+        photos_ok.sort(key=lambda it: (it.get('ar') or 2) >= 1)
     out = []
     while clips or photos_ok:  # alternate, starting with a clip
         if clips:
@@ -256,11 +280,23 @@ def find(story, names, query, work, want=24, clips_ok=True, used=()):
 
 
 def cut(vid, t, dur, out):
-    """Download only the seconds needed (720p is plenty for a 1080-wide band and saves the free VM's CPU)."""
+    """Download only the seconds needed (720p is plenty for a 1080-wide band and saves the free VM's CPU). Full screen:
+    a vertical video up to 1920p, a wide one 1080p (its 9:16 crop keeps 607 px across instead of 405)."""
+    hmax = 720 if WIDE_ONLY else (1920 if (AR.get(vid) or 2) < 1 else 1080)
+    # H.264 first: every ffmpeg decodes it and the free VM cuts it fastest
     r = _yt(['--download-sections', '*{:.1f}-{:.1f}'.format(t, t + dur), '--force-keyframes-at-cuts', '-f',
-             'bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720]/bv*+ba', '--merge-output-format', 'mp4', '-o', out,
-             'https://youtu.be/' + vid], timeout=300)
-    return out if os.path.exists(out) and os.path.getsize(out) > 20000 else None
+             'bv*[height<={h}][vcodec^=avc1]+ba[ext=m4a]/bv*[height<={h}][ext=mp4]+ba[ext=m4a]/b[height<={h}]/bv*+ba'.format(h=hmax),
+             '--merge-output-format', 'mp4', '--print', 'after_move:%(format_id)s', '-o', out, 'https://youtu.be/' + vid], timeout=300)
+    if not (os.path.exists(out) and os.path.getsize(out) > 20000):
+        return None
+    # 2026-10-24 Hindi test: two "clips" came back as 3.3 s of AUDIO ONLY (53-58 KB) and passed every later check
+    probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-count_packets', '-show_entries',
+                            'stream=nb_read_packets', '-of', 'csv=p=0', out], capture_output=True, text=True).stdout.strip()
+    if not probe.isdigit() or int(probe) < 10:
+        print('  clip {} @{:.0f}s has no usable picture (format {}), dropped'.format(vid, t, (r.stdout or '').strip()[:20]), flush=True)
+        os.remove(out)
+        return None
+    return out
 
 
 def photo(url, out):
