@@ -224,6 +224,10 @@ def reel_samples(count=2):
         except Exception as e:  # one story failing (e.g. no AI reply) never stops the run: the next story is tried
             log('  skip (error {}: {}): {}'.format(type(e).__name__, str(e)[:120], pick['query']))
             continue
+        if res.get('skip', '').startswith('packed'):  # REEL_RENDER=pack: built, waiting for its Cloud Run render
+            made += 1
+            log('PACKED in {:.0f} s: {} -> {}'.format(time.time() - t0, pick['query'], res['skip']))
+            continue
         if res.get('skip'):
             log('  skip ({}): {}'.format(res['skip'], pick['query']))
             continue
