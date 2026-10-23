@@ -130,6 +130,9 @@ def tick(dry=False, force=False):
     os.makedirs(work, exist_ok=True)
     try:
         post = build(page, work)
+    except ai.AIUnavailable as e:  # every AI model failed this minute: the same slot is tried again on the next tick
+        log('AI UNAVAILABLE, retried next tick:', e)
+        return
     except Exception as e:
         log('BUILD FAILED:', e)
         traceback.print_exc()
@@ -281,7 +284,11 @@ def reel_build_one():
     page = os.environ.get('FB_PAGE_NAME', 'Dr. Olsson')
     clean_work()
     recent = [h['headline'] for h in schedule.reel_history()[-30:]] + [q['headline'] for q in schedule.reel_queue()]
-    picks = ai.pick_stories(sources.trending(), recent)
+    try:
+        picks = ai.pick_stories(sources.trending(), recent)
+    except ai.AIUnavailable as e:
+        log('  reel build paused, AI unavailable: {}'.format(str(e)[:200]))
+        return
     failed = {q: t for q, t in schedule._load('reel_failed.json', {}).items()
               if schedule.now() - datetime.fromisoformat(t) < timedelta(hours=24)}
 
@@ -302,6 +309,9 @@ def reel_build_one():
         try:
             res = reel.build(page, outlets, pick['title'], pick['query'], pick.get('subject'), pick.get('tag', 'NEWS'), work,
                              used=schedule.reel_media() | {k for q in schedule.reel_queue() for k in q.get('media_keys', [])})
+        except ai.AIUnavailable as e:  # the AI is down right now, not the story: try again next run, story not marked
+            log('  reel build paused, AI unavailable: {}'.format(str(e)[:200]))
+            return
         except Exception as e:  # one story failing never stops the builder
             log('  reel skip (error {}: {})'.format(type(e).__name__, str(e)[:120]))
             fail(pick['query'])

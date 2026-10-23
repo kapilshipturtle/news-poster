@@ -15,8 +15,17 @@ CHAINS = {
     # gpt-oss-120b wrote a 135-word Reel script in 7.5 s, Qwen 3.8 27B read an image in 1.5 s)
     'best': os.environ.get('AI_BEST', 'gemini-3.8-flash,gemini-3.5-flash,groq:openai/gpt-oss-120b,gemma-4-31b-it').split(','),
     'bulk': os.environ.get('AI_BULK', 'groq:openai/gpt-oss-120b,groq:qwen/qwen3.8-27b,gemma-4-31b-it').split(','),
-    'vision': os.environ.get('AI_VISION', 'groq:qwen/qwen3.8-27b,gemma-4-31b-it').split(','),
+    # 2026-10-23: the only Groq vision model was wrongly marked used up and Gemma answered HTTP 500 for hours, so 19 Reel
+    # builds died: a third, separate quota pool (Gemini Flash-Lite, slow but free) backs them up
+    'vision': os.environ.get('AI_VISION', 'groq:qwen/qwen3.8-27b,gemma-4-31b-it,gemini-3.5-flash-lite').split(','),
 }
+# MEASURED 2026-10-23: Groq's free plan refuses a ~10k-token prompt every time (8,000 tokens/min); a prompt longer than
+# this is not sent to Groq at all (it would only wait out two retries)
+GROQ_MAX_CHARS = 24000
+
+
+class AIUnavailable(RuntimeError):
+    """Every model of a chain failed right now (quota, outage). The work is retried later; nothing is marked as bad."""
 TIMEOUT = int(os.environ.get('GEMINI_TIMEOUT', '60'))  # seconds for Gemini Flash; Gemma gets 3x
 
 
@@ -64,19 +73,22 @@ def _call(chain, parts, temperature):
     until Google's stated reset (no waiting on it again)."""
     err = None
     skip = _exhausted()
+    chars = sum(len(p_.get('text', '')) for p_ in parts)
     for model in CHAINS[chain]:
         model = model.strip()
         if model in skip:
             continue
         if model.startswith('groq:'):
-            if not os.environ.get('GROQ_API_KEY'):
+            if not os.environ.get('GROQ_API_KEY') or chars > GROQ_MAX_CHARS:
                 continue
             try:
                 return _groq(model[5:], parts, temperature)
             except Exception as e:  # noqa: BLE001 - the next model in the chain takes over
                 err = e
+                if not isinstance(e, urllib.error.HTTPError):  # _groq already logged its HTTP errors
+                    _log_fail(model, e)
                 continue
-        gemma = model.startswith('gemma')
+        gemma = model.startswith('gemma') or 'lite' in model  # the slow ones get 3x the time
         cfg = {'temperature': temperature}
         if not gemma:
             cfg['responseMimeType'] = 'application/json'  # Gemma via this API answers in text; JSON is parsed out
@@ -92,6 +104,7 @@ def _call(chain, parts, temperature):
             except urllib.error.HTTPError as e:
                 err = e
                 body_txt = e.read().decode('utf-8', 'ignore')
+                _log_fail(model, e, body_txt)
                 if e.code == 429 and 'PerDay' in body_txt:
                     m = re.search(r'"retryDelay":\s*"(\d+)', body_txt)
                     _mark_exhausted(model, int(m.group(1)) if m else 3600)
@@ -102,11 +115,18 @@ def _call(chain, parts, temperature):
                 break
             except (TimeoutError, OSError, ValueError, KeyError, IndexError) as e:
                 err = e
+                _log_fail(model, e)
                 if attempt < 1:
                     time.sleep(5)
                     continue
                 break
-    raise err or RuntimeError('every model is out of free quota today')
+    raise AIUnavailable('{} chain: every model failed, last: {}: {}'.format(chain, type(err).__name__ if err else 'quota',
+                                                                           str(err)[:150] if err else 'all used up today'))
+
+
+def _log_fail(model, e, body=''):
+    """Every model failure is one log line with its real reason (a swallowed error cost a day of guessing)."""
+    print('  ai {} failed: {}: {} {}'.format(model, type(e).__name__, str(e)[:100], body[:160].replace('\n', ' ')), flush=True)
 
 
 def _groq(model, parts, temperature):
@@ -127,13 +147,23 @@ def _groq(model, parts, temperature):
         except urllib.error.HTTPError as e:
             txt = e.read().decode('utf-8', 'ignore')
             wait = float(e.headers.get('retry-after') or 0)
-            if e.code == 429 and ('per day' in txt.lower() or 'RPD' in txt or wait > 300):
+            _log_fail('groq:' + model, e, txt)
+            if e.code == 429 and ('per day' in txt.lower() or 'RPD' in txt or 'TPD' in txt):  # Groq says the DAILY limit
                 _mark_exhausted('groq:' + model, max(wait, 3600))
+                raise
+            if e.code == 429 and wait > 65:  # a long wait without a daily limit: skipped only as long as Groq says
+                _mark_exhausted('groq:' + model, wait)
                 raise
             if e.code in (429, 500, 503) and attempt < 2:
                 time.sleep(min(max(wait, 3), 65))  # per-minute token/request limit: wait as told
                 continue
             raise
+
+
+def sources_text(sources, per=3000, total=14000):
+    """The articles as prompt text, each cut to its first `per` characters (the lead carries the facts) and all of them
+    to `total`, so the prompt fits every model of the chain (Groq's free plan refuses ~10k tokens)."""
+    return '\n\n'.join('[{}] {}\n{}'.format(a['outlet'], a['title'], a['text'][:per]) for a in sources)[:total]
 
 
 def gemini(prompt, temperature=0.7, chain='best'):
@@ -196,7 +226,7 @@ def pick_stories(cands, recent):
 def write_post(page, sources, tweets, fix=None):
     t = '\n'.join('{} | @{} ({}) | {} likes | {}'.format(i, x['handle'], x['name'], x['likes'], x['text'][:400])
                   for i, x in enumerate(tweets)) or '(none)'
-    src = '\n\n'.join('[{}] {}\n{}'.format(a['outlet'], a['title'], a['text']) for a in sources)
+    src = sources_text(sources)
     prompt = WRITE.format(page=page, tweets=t, sources=src)
     if fix:
         prompt += '\n\nYOUR PREVIOUS ATTEMPT WAS REJECTED FOR: {}. Fix exactly these problems.'.format('; '.join(fix))

@@ -287,18 +287,20 @@ def edit_plan(pieces, found, facts, names):
     """The AI edit, then the hard rules in code: valid values, every moment once (an unused, best-matching moment
     replaces a duplicate), no overlay twice in a row, at most MAX_JOINS non-cut joins and MAX_EFFECTS effects (the
     brain's earliest ones kept), never an effect on two pieces in a row."""
-    plan = []
-    try:
+    plan, by_i = [], {}
+    for _ in range(2):  # a second ask when the reply missed pieces
         out = ai.gemini(EDIT.format(
             pieces='\n'.join('{} | {:.1f} | {}'.format(i, p['b'] - p['a'], p['text']) for i, p in enumerate(pieces)),
             moments='\n'.join('{} | {} | {}'.format(i, m['kind'], m.get('desc', '')) for i, m in enumerate(found)),
             facts=json.dumps(facts), names=json.dumps(names), max_joins=MAX_JOINS, max_effects=MAX_EFFECTS,
             effects='; '.join('"{}" = {} (suits: {})'.format(k, v[0], v[1]) for k, v in EFFECTS.items())),
-            temperature=0.5, chain='bulk')
+            temperature=0.5, chain='bulk')  # AIUnavailable propagates: the Reel waits, it is never built unedited
         plan = out.get('pieces', []) if isinstance(out, dict) else out
-    except Exception:
-        plan = []
-    by_i = {d.get('i'): d for d in plan if isinstance(d, dict)}
+        by_i = {d.get('i'): d for d in plan if isinstance(d, dict)} if isinstance(plan, list) else {}
+        if len(by_i) >= len(pieces):
+            break
+    if len(by_i) < 0.9 * len(pieces):  # 2026-10-23: a failed edit AI shipped 19 plain cuts with keyword-matched pictures
+        raise ai.AIUnavailable('edit plan covered {} of {} pieces'.format(len(by_i), len(pieces)))
     used, result, last_overlay = set(), [], None
     for i, p in enumerate(pieces):
         d = by_i.get(i, {})
@@ -465,7 +467,7 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
     def stage(name):  # how long every step took, so a slowdown is always visible in the log
         print('  [{:5.0f} s] {}'.format(time.time() - t0[0], name), flush=True)
     os.makedirs(work, exist_ok=True)
-    src = '\n\n'.join('[{}] {}\n{}'.format(a['outlet'], a['title'], a['text']) for a in outlets)
+    src = ai.sources_text(outlets)
     s, problems = None, None
     for _ in range(3):
         prompt = SCRIPT.format(sources=src)
