@@ -214,7 +214,8 @@ cut into short pieces. For EACH piece choose:
 - effect: null or ONE B-roll effect when the sentence calls for it, at most {max_effects} in the whole Reel, never two
   pieces in a row, varied: {effects}.
 - overlay: null, "fact0"/"fact1" (show that fact box exactly when that fact is spoken) or "name0".."name3" (a name
-  title the first time that person/place is mentioned). Most pieces have no overlay; never two in a row.
+  title the first time that person/place is mentioned, ONLY on a moment that shows that very person/place). Most
+  pieces have no overlay; never two in a row.
 Editing must be present throughout (moves, layouts, the few accents spread out), but most pieces are a clean cut with
 no effect: the sentence decides, no quotas.
 
@@ -268,6 +269,20 @@ def _overlap(a, b):
     return len(wa & wb)
 
 
+def overlay_ok(overlay, moment, facts, names, prev):
+    """The text a piece may carry: never on two pieces in a row, and a name title only over a picture whose description
+    shows that name (Reel 2 put "BEARS" over a Patriots player and a stadium name over a close-up)."""
+    if not overlay or prev:
+        return None
+    if overlay in ('fact0', 'fact1'):
+        return overlay if int(overlay[-1]) < len(facts) else None
+    if overlay not in ['name{}'.format(k) for k in range(len(names))]:
+        return None
+    desc = set(re.findall(r'[a-z0-9]+', moment.get('desc', '').lower()))
+    words = [w for w in re.findall(r'[a-z0-9]+', names[int(overlay[4:])].lower()) if len(w) >= 3]
+    return overlay if words and any(w in desc for w in words) else None
+
+
 def edit_plan(pieces, found, facts, names):
     """The AI edit, then the hard rules in code: valid values, every moment once (an unused, best-matching moment
     replaces a duplicate), no overlay twice in a row, at most MAX_JOINS non-cut joins and MAX_EFFECTS effects (the
@@ -294,10 +309,7 @@ def edit_plan(pieces, found, facts, names):
                 return None  # not enough different moments: the Reel is skipped rather than repeating shots
             m = max(free, key=lambda k: (_overlap(found[k].get('desc', ''), p['text']), found[k]['kind'] == 'clip'))
         used.add(m)
-        overlay = d.get('overlay')
-        if overlay not in ['fact0', 'fact1'] + ['name{}'.format(k) for k in range(len(names))] or overlay == last_overlay \
-                or (overlay and overlay.startswith('fact') and int(overlay[-1]) >= len(facts)):
-            overlay = None
+        overlay = overlay_ok(d.get('overlay'), found[m], facts, names, last_overlay)
         last_overlay = overlay
         into = 'cut' if i == 0 else (d.get('into') if d.get('into') in JOIN else 'cut')
         if into != 'cut' and sum(r['into'] != 'cut' for r in result) >= MAX_JOINS:
