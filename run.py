@@ -13,6 +13,7 @@ import sys
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 
 from poster import ai, dedupe, facebook, gates, instagram, schedule, sources, xembed
 from poster.net import WORK, load_env
@@ -281,22 +282,33 @@ def reel_build_one():
     clean_work()
     recent = [h['headline'] for h in schedule.reel_history()[-30:]] + [q['headline'] for q in schedule.reel_queue()]
     picks = ai.pick_stories(sources.trending(), recent)
+    failed = {q: t for q, t in schedule._load('reel_failed.json', {}).items()
+              if schedule.now() - datetime.fromisoformat(t) < timedelta(hours=24)}
+
+    def fail(query):  # a story that could not become a Reel is not tried again for 24 h (each try costs 10+ min)
+        failed[query] = schedule.now().isoformat()
+        schedule._save('reel_failed.json', failed)
     for pick in picks:
         if any(dedupe._overlap(dedupe.words(pick['title']), dedupe.words(r)) >= dedupe.LIMIT for r in recent):
             continue  # this story already has a Reel (a Reel on a story that was also a photo post is fine)
+        if pick['query'] in failed:
+            continue
         work = os.path.join(WORK, 'reel-' + schedule.now().strftime('%Y%m%d-%H%M%S'))
         os.makedirs(work, exist_ok=True)
         outlets, _ = sources.articles(pick['cluster'], pick['query'])
         if len(outlets) < 2:
+            fail(pick['query'])
             continue
         try:
             res = reel.build(page, outlets, pick['title'], pick['query'], pick.get('subject'), pick.get('tag', 'NEWS'), work,
                              used=schedule.reel_media() | {k for q in schedule.reel_queue() for k in q.get('media_keys', [])})
         except Exception as e:  # one story failing never stops the builder
             log('  reel skip (error {}: {})'.format(type(e).__name__, str(e)[:120]))
+            fail(pick['query'])
             continue
         if res.get('skip'):
             log('  reel skip ({}): {}'.format(res['skip'], pick['query']))
+            fail(pick['query'])
             continue
         dest = os.path.join(schedule.REEL_QUEUE, os.path.basename(work))
         os.makedirs(dest, exist_ok=True)
