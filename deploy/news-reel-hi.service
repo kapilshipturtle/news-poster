@@ -25,5 +25,5 @@ Environment=SFX_DIR=/home/poster/sfx
 Environment=CLOUD_RENDER_URL=https://news-render-234515853790.us-central1.run.app
 Environment=CLOUD_RENDER_BUCKET=news-poster-1021-31733-render
 # separate from the builder, so a due Reel goes out even while the next one is building
-ExecStart=/usr/bin/flock -n /home/poster/state-hi/.reelpub.lock /home/poster/venv/bin/python run.py reel-publish
+ExecStart=/usr/bin/flock -n -E 0 /home/poster/state-hi/.reelpub.lock /home/poster/venv/bin/python run.py reel-publish
 TimeoutStartSec=1800

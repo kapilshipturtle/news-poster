@@ -25,5 +25,5 @@ Environment=SFX_DIR=/home/poster/sfx
 Environment=CLOUD_RENDER_URL=https://news-render-234515853790.us-central1.run.app
 Environment=CLOUD_RENDER_BUCKET=news-poster-1021-31733-render
 # its own unit: a long build never blocks the regular posts or a due Reel; -n: never two builds at once
-ExecStart=/usr/bin/flock -n /home/poster/state/.reel.lock /home/poster/venv/bin/python run.py reel-build
+ExecStart=/usr/bin/flock -n -E 0 /home/poster/state/.reel.lock /home/poster/venv/bin/python run.py reel-build
 TimeoutStartSec=5400
