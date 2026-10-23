@@ -334,8 +334,8 @@ FX_FILTER = {  # effects that are a plain filter on the finished piece
     'grain': 'noise=alls=12:allf=t',
     'vignette': 'vignette',
     # washes shift the colour planes through a lookup table (colorbalance converts to RGB: measured 3x a plain piece)
-    'wash_warm': "lutyuv=u='val-9':v='val+11'",
-    'wash_cool': "lutyuv=u='val+12':v='val-8'",
+    'wash_warm': "lutyuv=u='val-7':v='val+7'",
+    'wash_cool': "lutyuv=u='val+10':v='val-6'",
     'mono': 'hue=s=0',
 }
 
@@ -353,7 +353,7 @@ def _fx_png(name, folder):
             d = np.sqrt(((x - 540) / 650) ** 2 + ((y - 960) / 1150) ** 2)
             k = np.clip(d / 0.75, 0, 1)[..., None]
             rgba[..., :3] = (1 - k) * np.array([255, 240, 215]) + k * np.array([255, 150, 70])
-            rgba[..., 3] = 255 * 0.85 * np.clip(1 - d, 0, 1) ** 1.3
+            rgba[..., 3] = 255 * 0.55 * np.clip(1 - d, 0, 1) ** 1.3  # 0.85 washed a face out (frame check)
         else:
             a = np.radians(115)
             dist = np.abs((x - 540) * np.cos(a) + (y - 960) * np.sin(a))
