@@ -270,14 +270,14 @@ def _overlap(a, b):
 
 
 def overlay_ok(overlay, moment, facts, names, prev):
-    """The text a piece may carry: never on two pieces in a row, and a name title only over a picture whose description
+    """The text a piece may carry: never on two pieces in a row, and a name title only over a PHOTO whose description
     shows that name (Reel 2 put "BEARS" over a Patriots player and a stadium name over a close-up)."""
     if not overlay or prev:
         return None
     if overlay in ('fact0', 'fact1'):
         return overlay if int(overlay[-1]) < len(facts) else None
-    if overlay not in ['name{}'.format(k) for k in range(len(names))]:
-        return None
+    if overlay not in ['name{}'.format(k) for k in range(len(names))] or moment.get('kind') == 'clip':
+        return None  # clips often carry the broadcaster's own name caption (ABC7's sat under ours on the first live Reel)
     desc = set(re.findall(r'[a-z0-9]+', moment.get('desc', '').lower()))
     words = [w for w in re.findall(r'[a-z0-9]+', names[int(overlay[4:])].lower()) if len(w) >= 3]
     return overlay if words and any(w in desc for w in words) else None
