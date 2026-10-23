@@ -26,5 +26,7 @@ sudo -u poster bash -c '
   [ -f voices-v1.0.bin ] || wget -q https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin'
 install -m 644 /home/poster/news-poster/deploy/news-poster.service /etc/systemd/system/news-poster.service
 install -m 644 /home/poster/news-poster/deploy/news-poster.timer /etc/systemd/system/news-poster.timer
+install -m 644 /home/poster/news-poster/deploy/news-reel.service /etc/systemd/system/news-reel.service
+install -m 644 /home/poster/news-poster/deploy/news-reel.timer /etc/systemd/system/news-reel.timer
 systemctl daemon-reload
-echo "setup done; enable with: systemctl enable --now news-poster.timer"
+echo "setup done; enable with: systemctl enable --now news-poster.timer news-reel.timer"

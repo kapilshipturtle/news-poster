@@ -9,5 +9,7 @@ User=poster
 WorkingDirectory=/home/poster/news-poster
 Environment=PW_CHANNEL=chrome
 Environment=STATE_DIR=/home/poster/state
+# user 2026-10-23: 24 a day in total = 10 Reels (news-reel.timer) + 14 photo/text posts
+Environment=POSTS_PER_DAY=14
 ExecStart=/usr/bin/flock -w 900 /home/poster/state/.lock /home/poster/venv/bin/python run.py tick
 TimeoutStartSec=1500
