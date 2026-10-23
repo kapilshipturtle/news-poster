@@ -304,41 +304,61 @@ def reel_build_one():
         json.dump({'built': schedule.now().isoformat(), 'headline': res['headline'], 'caption': res['caption'],
                    'seconds': res['seconds'], 'media_keys': res['media_keys'], 'title': pick['title'], 'query': pick['query']},
                   open(os.path.join(dest, 'meta.json'), 'w'), indent=1)
+        shutil.rmtree(work, ignore_errors=True)  # the queue keeps its own copy; working files are ~200 MB a Reel
         log('REEL READY', res['headline'], res['moments'])
         return
 
 
-def reel_tick():
-    """Publish the oldest ready Reel when one of today's random Reel times is due; then build ahead if needed."""
+def reel_publish():
+    """Publish the oldest ready Reel when one of today's random Reel times is due. A Reel is marked published the
+    moment Facebook accepts it (before the status polling), and a Reel whose upload ended in an unknown state is
+    dropped, never retried: the same Reel can never go out twice."""
     import shutil
     load_env()
     slot = schedule.reel_due_slot()
     queue = schedule.reel_queue()
-    if slot and queue:
-        r = queue[0]
-        tok = os.environ['FB_PAGE_TOKEN']
-        try:
-            vid = facebook.publish_reel(os.environ['FB_PAGE_ID'], tok, os.path.join(r['dir'], 'reel.mp4'), r['caption'])
-            status = {}
-            for _ in range(40):  # Meta processes the upload; wait for the publishing result
-                time.sleep(15)
-                status = facebook.reel_status(vid, tok).get('status', {})
-                if status.get('video_status') in ('ready', 'error') or (status.get('publishing_phase') or {}).get('status') in ('complete', 'error'):
-                    break
-        except facebook.FacebookError as e:
-            log('REEL FACEBOOK ERROR:', e)
-            schedule.reel_brake(48 if e.blocked else 6, str(e))
-            return
-        bad = status.get('video_status') == 'error' or (status.get('publishing_phase') or {}).get('status') == 'error' \
-            or (status.get('processing_phase') or {}).get('status') == 'error'
-        if bad:  # Meta rejected or flagged it (copyright included): Reels pause for 48 h
-            schedule.reel_brake(48, 'reel status: {}'.format(json.dumps(status)[:300]))
-            log('REEL REJECTED, Reels paused 48 h:', json.dumps(status)[:300])
+    if not (slot and queue):
+        return
+    r = queue[0]
+    tok = os.environ['FB_PAGE_TOKEN']
+    try:
+        vid = facebook.publish_reel(os.environ['FB_PAGE_ID'], tok, os.path.join(r['dir'], 'reel.mp4'), r['caption'])
+    except facebook.FacebookError as e:  # Facebook refused it: nothing went out
+        log('REEL FACEBOOK ERROR:', e)
+        schedule.reel_brake(48 if e.blocked else 6, str(e))
+        return
+    except Exception as e:  # noqa: BLE001 - a network error mid-upload: it may or may not be live, so it is dropped
+        log('REEL UPLOAD ENDED UNKNOWN ({}: {}), Reel dropped, Reels paused 6 h'.format(type(e).__name__, str(e)[:200]))
         schedule.add_reel_media(r['media_keys'])
-        schedule.reel_mark(slot, {'time': schedule.now().isoformat(), 'slot': slot, 'video_id': vid, 'headline': r['headline'],
-                                  'title': r['title'], 'status': status})
         shutil.rmtree(r['dir'], ignore_errors=True)
-        log('REEL PUBLISHED', vid, r['headline'])
+        schedule.reel_brake(6, 'upload ended unknown: {}'.format(type(e).__name__))
+        return
+    schedule.add_reel_media(r['media_keys'])
+    record = {'time': schedule.now().isoformat(), 'slot': slot, 'video_id': vid, 'headline': r['headline'], 'title': r['title']}
+    schedule.reel_mark(slot, record)
+    shutil.rmtree(r['dir'], ignore_errors=True)
+    log('REEL PUBLISHED', vid, r['headline'])
+    status = {}
+    try:
+        for _ in range(40):  # Meta processes the upload; wait for the publishing result
+            time.sleep(15)
+            status = facebook.reel_status(vid, tok).get('status', {})
+            if status.get('video_status') in ('ready', 'error') or (status.get('publishing_phase') or {}).get('status') in ('complete', 'error'):
+                break
+    except Exception as e:  # noqa: BLE001 - the Reel is already out; only its status is unknown
+        log('REEL status check failed ({}: {}); the Reel itself was accepted'.format(type(e).__name__, str(e)[:200]))
+        return
+    bad = status.get('video_status') == 'error' or (status.get('publishing_phase') or {}).get('status') == 'error' \
+        or (status.get('processing_phase') or {}).get('status') == 'error'
+    if bad:  # Meta rejected or flagged it (copyright included): Reels pause for 48 h
+        schedule.reel_brake(48, 'reel status: {}'.format(json.dumps(status)[:300]))
+        log('REEL REJECTED, Reels paused 48 h:', json.dumps(status)[:300])
+    else:
+        log('REEL STATUS', json.dumps(status)[:300])
+
+
+def reel_tick():
+    reel_publish()
     reel_build_one()
 
 
@@ -358,6 +378,10 @@ if __name__ == '__main__':
         reel_samples(int(sys.argv[2]) if len(sys.argv) > 2 else 2)
     elif cmd == 'reel-tick':
         reel_tick()
+    elif cmd == 'reel-publish':
+        reel_publish()
+    elif cmd == 'reel-build':
+        reel_build_one()
     elif cmd == 'reel-selftest':
         load_env()
         reel_selftest()

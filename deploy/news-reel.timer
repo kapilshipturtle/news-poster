@@ -1,5 +1,5 @@
 [Unit]
-Description=Check every 5 minutes for a due Reel time; build Reels ahead
+Description=Check every 5 minutes for a due Reel time
 
 [Timer]
 OnCalendar=*:0/5

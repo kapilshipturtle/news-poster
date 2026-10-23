@@ -1,0 +1,19 @@
+[Unit]
+Description=news-poster Reels: keep up to 2 finished Reels ready (builds take 15-50 min)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=poster
+WorkingDirectory=/home/poster/news-poster
+Environment=PW_CHANNEL=chrome
+Environment=STATE_DIR=/home/poster/state
+Environment=KOKORO_DIR=/home/poster/models
+Environment=SFX_DIR=/home/poster/sfx
+# renders on Cloud Run (measured 75.9 s vs 1530 s here); falls back to this machine on any failure
+Environment=CLOUD_RENDER_URL=https://news-render-234515853790.us-central1.run.app
+Environment=CLOUD_RENDER_BUCKET=news-poster-1021-31733-render
+# its own unit: a long build never blocks the regular posts or a due Reel; -n: never two builds at once
+ExecStart=/usr/bin/flock -n /home/poster/state/.reel.lock /home/poster/venv/bin/python run.py reel-build
+TimeoutStartSec=5400

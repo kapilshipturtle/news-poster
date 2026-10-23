@@ -1,5 +1,5 @@
 [Unit]
-Description=news-poster Reels: publish a ready Reel when a random Reel time is due, then build ahead
+Description=news-poster Reels: publish the oldest ready Reel when a random Reel time is due
 After=network-online.target
 Wants=network-online.target
 
@@ -14,6 +14,6 @@ Environment=SFX_DIR=/home/poster/sfx
 # renders on Cloud Run (measured 75.9 s vs 1530 s here); falls back to this machine on any failure
 Environment=CLOUD_RENDER_URL=https://news-render-234515853790.us-central1.run.app
 Environment=CLOUD_RENDER_BUCKET=news-poster-1021-31733-render
-# its own lock and -n: a 30-40 min Reel build never blocks the regular posts, and never runs twice at once
-ExecStart=/usr/bin/flock -n /home/poster/state/.reel.lock /home/poster/venv/bin/python run.py reel-tick
-TimeoutStartSec=5400
+# separate from the builder, so a due Reel goes out even while the next one is building
+ExecStart=/usr/bin/flock -n /home/poster/state/.reelpub.lock /home/poster/venv/bin/python run.py reel-publish
+TimeoutStartSec=1800

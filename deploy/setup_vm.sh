@@ -28,5 +28,7 @@ install -m 644 /home/poster/news-poster/deploy/news-poster.service /etc/systemd/
 install -m 644 /home/poster/news-poster/deploy/news-poster.timer /etc/systemd/system/news-poster.timer
 install -m 644 /home/poster/news-poster/deploy/news-reel.service /etc/systemd/system/news-reel.service
 install -m 644 /home/poster/news-poster/deploy/news-reel.timer /etc/systemd/system/news-reel.timer
+install -m 644 /home/poster/news-poster/deploy/news-reel-build.service /etc/systemd/system/news-reel-build.service
+install -m 644 /home/poster/news-poster/deploy/news-reel-build.timer /etc/systemd/system/news-reel-build.timer
 systemctl daemon-reload
-echo "setup done; enable with: systemctl enable --now news-poster.timer news-reel.timer"
+echo "setup done; enable with: systemctl enable --now news-poster.timer news-reel.timer news-reel-build.timer"
