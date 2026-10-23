@@ -32,6 +32,7 @@ SPORTS_TAGS = {'NFL', 'NBA', 'MLB', 'NHL', 'WNBA', 'SPORTS', 'SOCCER', 'UFC'}  #
 WIDE_ONLY, PREFER_VERTICAL = True, False
 MAX_VIDEOS, PER_VIDEO = 5, 2  # clips: from at most this many videos, at most this many moments each
 AR = {}  # video id -> width/height, from its storyboard metadata
+CUT_EXTRA, CUT_TIMEOUT = ['--force-keyframes-at-cuts'], 300  # full-screen clip download options (a profile may change them)
 _last = [0.0]
 BING_HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -282,11 +283,16 @@ def find(story, names, query, work, want=24, clips_ok=True, used=()):
 def cut(vid, t, dur, out):
     """Download only the seconds needed (720p is plenty for a 1080-wide band and saves the free VM's CPU). Full screen:
     a vertical video up to 1920p, a wide one 1080p (its 9:16 crop keeps 607 px across instead of 405)."""
-    hmax = 720 if WIDE_ONLY else (1920 if (AR.get(vid) or 2) < 1 else 1080)
-    # H.264 first: every ffmpeg decodes it and the free VM cuts it fastest
-    r = _yt(['--download-sections', '*{:.1f}-{:.1f}'.format(t, t + dur), '--force-keyframes-at-cuts', '-f',
-             'bv*[height<={h}][vcodec^=avc1]+ba[ext=m4a]/bv*[height<={h}][ext=mp4]+ba[ext=m4a]/b[height<={h}]/bv*+ba'.format(h=hmax),
-             '--merge-output-format', 'mp4', '--print', 'after_move:%(format_id)s', '-o', out, 'https://youtu.be/' + vid], timeout=300)
+    if WIDE_ONLY:  # the US Page: exactly the command it has always used (user: English must not be affected at all)
+        r = _yt(['--download-sections', '*{:.1f}-{:.1f}'.format(t, t + dur), '--force-keyframes-at-cuts', '-f',
+                 'bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720]/bv*+ba', '--merge-output-format', 'mp4', '-o', out,
+                 'https://youtu.be/' + vid], timeout=300)
+    else:  # full screen (Hindi): sharper sources, H.264 first (every ffmpeg decodes it, the free VM cuts it fastest)
+        hmax = 1920 if (AR.get(vid) or 2) < 1 else 1080
+        r = _yt(['--download-sections', '*{:.1f}-{:.1f}'.format(t, t + dur)] + CUT_EXTRA + ['-f',
+                 'bv*[height<={h}][vcodec^=avc1]+ba[ext=m4a]/bv*[height<={h}][ext=mp4]+ba[ext=m4a]/b[height<={h}]/bv*+ba'.format(h=hmax),
+                 '--merge-output-format', 'mp4', '--print', 'after_move:%(format_id)s', '-o', out, 'https://youtu.be/' + vid],
+                timeout=CUT_TIMEOUT)
     if not (os.path.exists(out) and os.path.getsize(out) > 20000):
         return None
     # 2026-10-24 Hindi test: two "clips" came back as 3.3 s of AUDIO ONLY (53-58 KB) and passed every later check

@@ -64,6 +64,10 @@ moments.WIDE_ONLY, moments.PREFER_VERTICAL = False, True
 # MEASURED 2026-10-24 (Daler Mehndi story): 18 usable moments for 20 pieces -> more clips per story, and pieces up to
 # 3.5 s (user: B-roll under 3-4 s) so a 50 s Reel needs ~15 pieces instead of ~19
 moments.MAX_VIDEOS, moments.PER_VIDEO = 7, 3
+# 2026-10-24 live: re-encoding 1080p cuts (--force-keyframes-at-cuts) on the e2-micro timed out at 300 s, 3 at a time,
+# and loaded the VM the US Page shares -> cut on existing keyframes (stream copy: no encoding; a clip may start a
+# couple of seconds early, and the 3-frame checks + final look judge what is really in it)
+moments.CUT_EXTRA = []
 reel.MAX_PIECE = 4.0  # user: B-roll under 3-4 s; the final check left too few spares at 3.5 s
 moments.CHECK = moments.CHECK.replace('the picture editor of a US news page', 'the picture editor of an Indian news page').replace(
     'Return JSON: {{"<sheet letter>": {{"<number>": {{"keep": true|false, "desc": "what it shows, <= 12 words"}}}}}} for every number.',

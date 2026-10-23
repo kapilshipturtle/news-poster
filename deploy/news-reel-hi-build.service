@@ -10,8 +10,8 @@ WorkingDirectory=/home/poster/news-poster
 Environment=PW_CHANNEL=chrome
 Environment=STATE_DIR=/home/poster/state-hi
 Environment=PROFILE=hi
-# user 2026-10-24: Hindi 12 Reels/day, 07:00-23:30 IST (01:30-18:00 UTC), at least 45 min apart
-Environment=REELS_PER_DAY=12
+# user 2026-10-24: Hindi 10 Reels/day, 07:00-23:30 IST (01:30-18:00 UTC), at least 45 min apart
+Environment=REELS_PER_DAY=10
 Environment=REEL_WINDOW=90-1080
 Environment=REEL_GAP_MIN=45
 # its own free AI pools, so the two Pages never starve each other (US uses Groq + Gemini Flash)
