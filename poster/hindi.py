@@ -568,3 +568,51 @@ def verify(plan, files, spare, fetch, names=()):
 
 
 reel.VERIFY = verify
+
+# ---- opening clip WITH its own sound (user 2026-10-24: "in starting show original clips for 3 to 4 seconds with effects,
+# keeping the clip's voice, so it increases curiosity") ------------------------------------------------------------------
+HOOK_SECONDS = 3.5
+SPEAKING = re.compile(r'(?i)speak|says|said|press|address|interview|statement|podium|rally|speech|briefing|media|talk|बोल|बयान')
+
+
+def _loudness(path):
+    """mean volume of the clip's sound in dB (None when it has no sound)"""
+    r = subprocess.run(['ffmpeg', '-hide_banner', '-i', path, '-vn', '-af', 'volumedetect', '-f', 'null', '-'], capture_output=True, text=True)
+    m = re.search(r'mean_volume: (-?[\d.]+) dB', r.stderr)
+    return float(m.group(1)) if m else None
+
+
+def hook(plan, spare, fetch, work):
+    """A spare clip of the story's people SPEAKING (statement / press / interview first), cut with its own sound, through
+    the same text and shot-change checks, with real sound in it. None: the Reel starts with the narration as before."""
+    clips = [m for m in spare if m.get('kind') == 'clip']
+    clips.sort(key=lambda m: not SPEAKING.search(m.get('desc', '')))
+    used = {(p['moment'].get('vid'), round(p['moment'].get('t', -1))) for p in plan}
+    for p in plan:  # nearby moments of the Reel's own clips as a last resort (different seconds of the same footage)
+        m = p['moment']
+        if m.get('kind') == 'clip' and (m['vid'], round(m['t'] - 8)) not in used and m['t'] >= 8:
+            clips.append(dict(m, t=m['t'] - 8))
+    for m in clips[:6]:
+        out = os.path.join(work, 'hook_src.mp4')
+        try:
+            f = moments.cut(m['vid'], m['t'], HOOK_SECONDS + 0.4, out)
+        except Exception:  # noqa: BLE001 - one candidate's trouble; the next is tried
+            f = None
+        if not f:
+            continue
+        if text_heavy(f):
+            os.path.exists(f) and os.remove(f)
+            continue
+        vol = _loudness(f)
+        if vol is None or vol < -38:  # no sound or near silence: no point keeping "the clip's voice"
+            print('  opening clip skipped: sound {} dB'.format(vol), flush=True)
+            os.remove(f)
+            continue
+        if m in spare:
+            spare.remove(m)
+        print('  opening clip: {} ({} dB)'.format(m.get('desc', '')[:60], vol), flush=True)
+        return {'src': f, 'dur': HOOK_SECONDS, 'cx': m.get('cx')}
+    return None
+
+
+reel.HOOK = hook

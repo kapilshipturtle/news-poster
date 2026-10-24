@@ -203,6 +203,7 @@ VOICE_SECONDS = (40, 70)  # the voice's accepted length (a profile may change it
 SCRIPT_WORDS = '120 to 150'  # the word range a rejected script is told to fix (a profile may change it)
 MAX_JOINS, MAX_EFFECTS = 4, 4  # per Reel: ~18 joins, so 4 accents keeps 78 % cuts; effects never two pieces in a row
 VERIFY = None  # optional fn(plan, files, spare, fetch, names) -> files or None, run once all pictures are fetched
+HOOK = None  # optional fn(plan, spare, fetch, work) -> {'src', 'dur', 'cx'} or None: an opening clip WITH its own sound
 
 EDIT = """You are the editor of a fast, well-edited vertical news Reel (like the best US news pages). The voice-over is fixed and
 cut into short pieces. For EACH piece choose:
@@ -558,6 +559,9 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
         if not files:
             return {'skip': 'pictures failed the final check and no spares were left'}
         stage('final picture check passed')
+    hook = HOOK(plan, spare, fetch, work) if HOOK else None  # a profile's opening clip (PROFILE=hi); the US Page sets none
+    if hook:
+        stage('opening clip: {:.1f} s with its own sound'.format(hook['dur']))
     ass = os.path.join(work, 'overlay.ass')
     screen = s.get('screen_lines') if len(s.get('screen_lines') or []) == len(s['lines']) else s['lines']
     _overlay_ass(s['headline'], page, screen, timing, total, plan, facts, names, ass, word_times(wav, screen, timing))
@@ -565,7 +569,7 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
     open(os.path.join(work, 'caption.txt'), 'w').write(caption + '\n')
     json.dump({'script': s, 'plan': plan}, open(os.path.join(work, 'edit.json'), 'w'), indent=1, default=str)
     video = os.path.join(work, 'reel.mp4')
-    tar = cloud.pack(work, plan, files, seg_lens, wav, ass, total, SFX_DIR)
+    tar = cloud.pack(work, plan, files, seg_lens, wav, ass, total, SFX_DIR, hook)
     if os.environ.get('REEL_RENDER') == 'pack':  # the job is left for a manual Cloud Run render (samples only)
         return {'skip': 'packed for Cloud Run: {}'.format(tar)}
     marks = cloud.render(tar, video)
@@ -578,6 +582,10 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
                     for n, p in enumerate(plan)]
         stage('rendered pieces')
         video = assemble(rendered, plan, wav, ass, total, video)
+        if hook:
+            video = prepend_hook(video, render_piece(hook['src'], 'clip', 'full', 'push_in', hook['dur'] + 0.25,
+                                                     os.path.join(work, 'hook_v.mp4'), 'vignette', False, hook.get('cx')),
+                                 hook['src'], hook['dur'], os.path.join(work, 'reel_hook.mp4'))
         stage('assembled')
     kinds = [p['moment']['kind'] for p in plan]
     return {'video': video, 'caption': caption, 'headline': s['headline'], 'seconds': round(total, 1),
@@ -641,6 +649,23 @@ def sfx_events(plan):
         k = used.get(prefix, 0)
         used[prefix] = k + 1
         out.append((max(0.0, t - lead), os.path.join(SFX_DIR, pool[k % len(pool)]), level))
+    return out
+
+
+def prepend_hook(video, hook_video, hook_audio_src, dur, out):
+    """The opening clip (already rendered full screen with its effect) WITH its own sound, a white flash, then the Reel.
+    Used only by a profile that sets HOOK (Hindi); the US Page's Reels never pass here."""
+    td = 0.2
+    graph = ('[0:v]setsar=1[h];[2:v]setsar=1[r];[h][r]xfade=transition=fadewhite:duration={td}:offset={o:.3f},format=yuv420p[v];'
+             '[1:a]atrim=0:{d:.3f},asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo,'
+             'loudnorm=I=-16:TP=-1.5:LRA=11,afade=t=out:st={fo:.3f}:d=0.25[ha];'
+             '[2:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay={ms}|{ms}[ra];'
+             '[ha][ra]amix=inputs=2:normalize=0:duration=longest,alimiter=limit=0.95[a]').format(
+        td=td, o=dur - td, d=dur, fo=max(0, dur - 0.25), ms=int((dur - td) * 1000))
+    subprocess.run(['nice', '-n', '10', 'ffmpeg', '-loglevel', 'error', '-y', '-i', hook_video, '-i', hook_audio_src, '-i', video,
+                    '-filter_complex', graph, '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
+                    '-g', str(FPS * 2), '-keyint_min', str(FPS * 2), '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000',
+                    '-movflags', '+faststart', out], check=True, capture_output=True, timeout=2400)
     return out
 
 

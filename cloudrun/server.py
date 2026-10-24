@@ -53,6 +53,11 @@ def render(bucket, job):
     marks['render_pieces_s'] = round(time.time() - t1, 1)
     t2 = time.time()
     video = reel.assemble(rendered, spec['plan'], work + '/voice.wav', work + '/overlay.ass', spec['total'], work + '/reel.mp4')
+    hk = spec.get('hook')
+    if hk:  # an opening clip with its own sound (Hindi jobs only)
+        hv = reel.render_piece(work + '/' + hk['src'], 'clip', 'full', 'push_in', hk['dur'] + 0.25, work + '/hook_v.mp4', 'vignette', False,
+                               hk.get('cx'))
+        video = reel.prepend_hook(video, hv, work + '/' + hk['src'], hk['dur'], work + '/reel_hook.mp4')
     marks['assemble_s'] = round(time.time() - t2, 1)
     gcs_put(bucket, job + '/reel.mp4', video, 'video/mp4')
     marks['total_s'] = round(time.time() - t, 1)

@@ -38,13 +38,17 @@ def _gcs(method, name, path=None):
         open(path, 'wb').write(data)
 
 
-def pack(work, plan, files, seg_lens, wav, ass, total, sfx_dir):
+def pack(work, plan, files, seg_lens, wav, ass, total, sfx_dir, hook=None):
     """<work>/in.tar.gz: the sources, voice, captions, sound effects and job.json the worker renders from."""
     pieces = [{'src': os.path.basename(f), 'kind': p['moment']['kind'], 'layout': p['layout'], 'motion': p['motion'],
                'seconds': seg_lens[n], 'effect': p.get('effect'), 'flash_in': p['into'] == 'flash', 'cx': p['moment'].get('cx')}
               for n, (p, f) in enumerate(zip(plan, files))]
     job = os.path.join(work, 'job.json')
-    json.dump({'pieces': pieces, 'plan': plan, 'total': total}, open(job, 'w'), default=str)
+    spec = {'pieces': pieces, 'plan': plan, 'total': total}
+    if hook:  # an opening clip with its own sound (Hindi profile only)
+        spec['hook'] = {'src': os.path.basename(hook['src']), 'dur': hook['dur'], 'cx': hook.get('cx')}
+        files = list(files) + [hook['src']]
+    json.dump(spec, open(job, 'w'), default=str)
     out = os.path.join(work, 'in.tar.gz')
     with tarfile.open(out, 'w:gz') as t:
         for f in list(files) + [wav, ass, job]:
