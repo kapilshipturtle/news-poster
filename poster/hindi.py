@@ -13,7 +13,7 @@ import threading
 import urllib.error
 import urllib.request
 
-from . import ai, moments, net, reel, sources
+from . import ai, moments, net, reel, schedule, sources
 
 FISH_VOICE = os.environ.get('HINDI_VOICE', '6a9e3e125639485bbe404363818ef997')  # fish-MA, chosen by the user
 FISH_MODEL = 's2.1-pro-free'  # Fish's free model (same model as paid s2.1-pro; Channel Studio uses it)
@@ -26,6 +26,12 @@ US_QUEUE = os.environ.get('US_REEL_QUEUE', '/home/poster/state/reel_queue')
 def english_needs_build():
     """User 2026-10-24: English must not be affected at all. Both Pages share one build lock (the VM's 1 GB); a Hindi build
     started while the US Page has NO Reel ready could make an English slot pass empty -> Hindi waits until English has one."""
+    try:
+        with open(os.path.join(os.path.dirname(US_QUEUE), 'reel_ai_pause.json')) as f:
+            if json.load(f).get('until', '') > schedule.now().isoformat():
+                return False  # the US builder's AI is down for now: it cannot build anyway, Hindi uses the turn
+    except (OSError, ValueError):
+        pass
     try:
         return os.path.isdir(US_QUEUE) and not any(os.path.exists(os.path.join(US_QUEUE, d, 'meta.json')) for d in os.listdir(US_QUEUE))
     except OSError:

@@ -285,6 +285,8 @@ def reel_build_one():
     load_env()
     if schedule.braked() or schedule.reel_braked() or len(schedule.reel_queue()) >= 2:
         return
+    if schedule._load('reel_ai_pause.json', {}).get('until', '') > schedule.now().isoformat():
+        return  # every AI model failed a few minutes ago: no lock-holding retries until the pause ends
     if os.environ.get('PROFILE') == 'hi' and hindi.english_needs_build():  # English first (one shared build lock)
         log('  hindi build waits: the US Page has no Reel ready')
         return
@@ -295,6 +297,7 @@ def reel_build_one():
         picks = ai.pick_stories(sources.trending(), recent)
     except ai.AIUnavailable as e:
         log('  reel build paused, AI unavailable: {}'.format(str(e)[:200]))
+        schedule._save('reel_ai_pause.json', {'until': (schedule.now() + timedelta(minutes=10)).isoformat()})
         return
     failed = {q: t for q, t in schedule._load('reel_failed.json', {}).items()
               if schedule.now() - datetime.fromisoformat(t) < timedelta(hours=24)}
@@ -318,6 +321,7 @@ def reel_build_one():
                              used=schedule.reel_media() | {k for q in schedule.reel_queue() for k in q.get('media_keys', [])})
         except ai.AIUnavailable as e:  # the AI is down right now, not the story: try again next run, story not marked
             log('  reel build paused, AI unavailable: {}'.format(str(e)[:200]))
+            schedule._save('reel_ai_pause.json', {'until': (schedule.now() + timedelta(minutes=10)).isoformat()})
             return
         except Exception as e:  # one story failing never stops the builder
             log('  reel skip (error {}: {})'.format(type(e).__name__, str(e)[:120]))
