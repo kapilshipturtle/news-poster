@@ -328,10 +328,14 @@ reel.voice = voice
 _build = reel.build
 
 
-def build(*a, **k):
+CURRENT = {}
+
+
+def build(page, outlets, story, query, subject, tag, work, used=()):
     PICTURES['n'] = None
     PICTURES_READY.clear()  # each story waits for its OWN picture search
-    return _build(*a, **k)
+    CURRENT.update(story=story, query=query, work=work, used=set(used), replenished=False)
+    return _build(page, outlets, story, query, subject, tag, work, used)
 
 
 reel.build = build
@@ -527,6 +531,27 @@ def _sheet(files, path, cxs=None):
     return path
 
 
+def _replenish(plan, spare, names):
+    """Once per Reel: a second picture search (the Hindi query, then each person's name alone) so a story with a few
+    rejected pictures is finished instead of dropped. Same checks as the first search."""
+    CURRENT['replenished'] = True
+    used = set(CURRENT.get('used') or ()) | {reel.media_key(p['moment']) for p in plan} | {reel.media_key(m) for m in spare}
+    queries = [q for q in [HI_QUERY.get(CURRENT.get('query'))] + list(names)[:3] if q]
+    for i, q in enumerate(queries[:3]):
+        try:
+            more = _find(CURRENT.get('story', ''), list(names), q, os.path.join(CURRENT['work'], 'more{}'.format(i)), want=24,
+                         clips_ok=True, used=used)
+        except Exception as e:  # noqa: BLE001 - the Reel then works with the spares it has
+            print('  extra picture search failed: {}: {}'.format(type(e).__name__, str(e)[:100]), flush=True)
+            continue
+        new = [m for m in more if reel.media_key(m) not in used]
+        used |= {reel.media_key(m) for m in new}
+        spare.extend(new)
+        print('  extra picture search "{}": {} new moments'.format(q[:40], len(new)), flush=True)
+        if len(spare) >= 8:
+            break
+
+
 def verify(plan, files, spare, fetch, names=()):
     """Up to three looks: one vision request over a contact sheet of the whole Reel; every BAD piece is swapped for the
     next spare that passes the per-file checks and the swaps are looked at again, so a Reel is never packed with an
@@ -536,9 +561,15 @@ def verify(plan, files, spare, fetch, names=()):
     for rnd in range(3):
         lines = '\n'.join('{} | {} | said: "{}" | should show: {}'.format(
             n, p['moment']['kind'], p['text'][:90], p['moment'].get('desc', '')) for n, p in enumerate(plan))
-        out = ai.gemini_vision(FINAL.format(story=' '.join(p['text'] for p in plan[:2])[:160], pieces=lines,
-                                            names=', '.join(names) or 'the people the sentences name'),
-                               [_sheet(files, os.path.join(work, 'final_{}.jpg'.format(rnd)), [p['moment'].get('cx') for p in plan])])
+        sheet = _sheet(files, os.path.join(work, 'final_{}.jpg'.format(rnd)), [p['moment'].get('cx') for p in plan])
+        out = None
+        for _ in range(2):  # MEASURED 2026-10-24: the model once answered null ('NoneType' has no attribute 'get')
+            out = ai.gemini_vision(FINAL.format(story=' '.join(p['text'] for p in plan[:2])[:160], pieces=lines,
+                                                names=', '.join(names) or 'the people the sentences name'), [sheet])
+            if isinstance(out, dict):
+                break
+        if not isinstance(out, dict):
+            return None  # never packed unchecked
         bad = sorted({b.get('n') for b in (out.get('bad') or []) if isinstance(b, dict) and isinstance(b.get('n'), int)
                       and 0 <= b['n'] < len(plan)})
         for b in out.get('bad') or []:
@@ -550,6 +581,8 @@ def verify(plan, files, spare, fetch, names=()):
             return None
         good_clips = [p['moment'] for i, p in enumerate(plan) if i not in bad and p['moment'].get('kind') == 'clip']
         taken = {(p['moment'].get('vid'), round(p['moment'].get('t', -1))) for p in plan}
+        if len(spare) < len(bad) and not CURRENT.get('replenished'):
+            _replenish(plan, spare, names)  # 7 of 16 failed Hindi stories on day 1 ran out of spares HERE
         for n in bad:
             files[n] = None
             if not spare:  # no spares left: new moments from the clips that passed, 6-12 s away (different footage)
