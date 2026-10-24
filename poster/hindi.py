@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import urllib.error
 import urllib.request
 
@@ -94,6 +95,10 @@ def pick_stories(cands, recent):
 
 def yt_search(query, subject_words, n=10):
     out = _yt_search(query, subject_words, n)
+    seen = {v['id'] for v in out}
+    out += [v for v in _yt_search(query + ' ANI', subject_words, n) if v['id'] not in seen]  # agency footage of the event
+    for v in out:
+        v['own'] = v['own'] or bool(AGENCY.search(v['channel']))  # find() puts these first
     if query in HI_QUERY:
         seen = {v['id'] for v in out}
         out += [v for v in _yt_search(HI_QUERY[query], subject_words, n) if v['id'] not in seen]
@@ -112,10 +117,22 @@ ai.pick_stories, moments.yt_search, moments.bing_images = pick_stories, yt_searc
 _find = moments.find
 
 
+# raw event footage from news agencies / official channels: real pictures with only a small logo (user 2026-10-24: "not
+# able to find exact images and clips")
+AGENCY = re.compile(r'(?i)\b(ani|ani news|dd news|doordarshan|pib|sansad tv|pmo|narendra modi|mea ?india|airnews|ians)\b')
+PICTURES = {'n': None}
+PICTURES_READY = threading.Event()
+
+
 def find(story, names, query, work, want=24, clips_ok=True, used=()):
-    """More spare moments: the strict checks refuse far more Indian news pictures than US ones (the first production test
-    ran out of spares with 16 of 17 pieces fetched)."""
-    return _find(story, names, query, work, want=max(want, 40), clips_ok=clips_ok, used=used)
+    """More spare moments (the strict checks refuse far more Indian news pictures than US ones), and the count is handed
+    to the voice, which is only requested when the story has enough pictures (the free Hindi voice allows 10 a day)."""
+    try:
+        found = _find(story, names, query, work, want=max(want, 40), clips_ok=clips_ok, used=used)
+        PICTURES['n'] = len(found)
+        return found
+    finally:
+        PICTURES_READY.set()
 
 
 moments.find = find
@@ -128,7 +145,7 @@ The story is whatever the SOURCES below report. Use ONLY facts stated in the SOU
 names, scenes or outcomes. If the sources are too thin or contradict each other, return {{"skip": "<reason>"}}.
 
 Return JSON: {{"headline": str, "lines": [str, ...], "screen_lines": [str, ...], "facts": [str, str], "names": [str], "caption": str}}
-- lines: 10 to 22 spoken HINDI sentences, 140-300 words in total (45 seconds to 2 minutes; as long as the story's real facts
+- lines: 10 to 22 spoken HINDI sentences, 130-260 words in total (45 seconds to 2 minutes; as long as the story's real facts
   carry, never padded), each at most 16 words. Numbers written as Hindi words for
   the ear ("चार", "पचास हज़ार"). Line 1 (max 10 words) is the hook: the most surprising or emotional REAL detail.
   Then what happened, why it matters to an ordinary Indian family, and the human stakes.
@@ -152,10 +169,10 @@ def script_problems(s):
     if not 9 <= len(s.get('lines') or []) <= 24:
         p.append('{} lines, need 9-24'.format(len(s.get('lines') or [])))
     words = sum(len(l.split()) for l in s.get('lines') or [])
-    # user 2026-10-24: "reels can be any size from 45 seconds to 2 minutes". MEASURED Fish: ~2.9 words/s (131 words =
-    # 44.9 s) -> 135-330 words = ~46-115 s
-    if not 135 <= words <= 330:
-        p.append('{} words, need 135-330'.format(words))
+    # user 2026-10-24: "reels can be any size from 45 seconds to 2 minutes". MEASURED F1: ~2.4 words/s (38 words =
+    # 15.6 s) -> 120-280 words = ~50-117 s (Fish, the fallback, is faster: ~2.9 words/s)
+    if not 120 <= words <= 280:
+        p.append('{} words, need 120-280'.format(words))
     bad = sorted({ch for ch in ' '.join(s.get('lines') or []) if not ALLOWED.match(ch)})
     if bad:
         p.append('characters that are not Hindi or English: {} (write those words in Devanagari)'.format(''.join(bad)))
@@ -163,13 +180,67 @@ def script_problems(s):
 
 
 reel.script_problems = script_problems
-reel.SCRIPT_WORDS = '140 to 300'  # what a rejected Hindi script is told (it was told the US 120-150 and overshot)
-reel.VOICE_SECONDS = (43, 125)  # user: 45 s to 2 min
+reel.SCRIPT_WORDS = '130 to 260'  # what a rejected Hindi script is told (it was told the US 120-150 and overshot)
+reel.VOICE_SECONDS = (43, 128)  # user: 45 s to 2 min
 ai.sources_text = lambda src, per=2500, total=10000: '\n\n'.join(
     '[{}] {}\n{}'.format(a['outlet'], a['title'], a['text'][:per]) for a in src)[:total]  # Devanagari costs more tokens
 
 
-# ---- the voice: Fish, free model, one request per Reel ------------------------------------------------------------------
+# ---- the voice: F1 (Google AI Studio), Fish as the last resort ----------------------------------------------------------
+F1_VOICE = os.environ.get('HINDI_VOICE_F1', 'hi-in-podcaster-1')  # user 2026-10-24: "use F1-hi-in-podcaster-1"
+F1_STYLE = 'a calm, confident Hindi TV news anchor: clear, natural and warm'  # a style field: never read aloud (measured)
+# MEASURED: 10 free requests a day per model (429 "limit: 10 requests per day on Free Tier"); the same F1 voice also works
+# on the Flash-Lite TTS model (16.8 s test, Whisper clean), which has its own 10
+F1_MODELS = ('gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts')
+
+
+def _audio(d):
+    if isinstance(d, dict):
+        for k, v in d.items():
+            if k in ('data', 'audio') and isinstance(v, str) and len(v) > 1000:
+                return v
+            a = _audio(v)
+            if a:
+                return a
+    elif isinstance(d, list):
+        for v in d:
+            a = _audio(v)
+            if a:
+                return a
+    return None
+
+
+def _f1(text, out):
+    """The whole script in ONE request (Interactions API, F1 library voice + style). None when both models' daily
+    quotas are used up or fail; a 429 marks that model until Google's stated reset."""
+    import base64
+    skip = ai._exhausted()
+    for model in F1_MODELS:
+        if 'tts:' + model in skip:
+            continue
+        body = {'model': model, 'input': [{'type': 'user_input', 'content': [{'type': 'text', 'text': text, 'annotations': [
+            {'type': 'speech_metadata', 'style': F1_STYLE}]}]}], 'response_format': {'type': 'audio'},
+            'generation_config': {'speech_config': [{'voice': F1_VOICE}]}}
+        req = urllib.request.Request('https://generativelanguage.googleapis.com/v1beta/interactions', data=json.dumps(body).encode(),
+                                     headers={'x-goog-api-key': os.environ.get('GEMINI_API_KEY', ''), 'Content-Type': 'application/json'})
+        try:
+            a = _audio(json.loads(urllib.request.urlopen(req, timeout=300).read()))
+        except urllib.error.HTTPError as e:
+            txt = e.read().decode('utf-8', 'ignore')
+            print('  F1 voice on {} failed: HTTP {} {}'.format(model, e.code, txt[:160]), flush=True)
+            if e.code == 429:
+                m = re.search(r'retry in (\d+)h(\d+)m', txt)
+                ai._mark_exhausted('tts:' + model, int(m.group(1)) * 3600 + int(m.group(2)) * 60 if m else 3600)
+            continue
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            print('  F1 voice on {} failed: {}: {}'.format(model, type(e).__name__, str(e)[:120]), flush=True)
+            continue
+        if a:
+            open(out, 'wb').write(base64.b64decode(a))
+            return out
+    return None
+
+
 def _fish(text, out):
     body = json.dumps({'text': text, 'reference_id': FISH_VOICE, 'format': 'wav', 'normalize': True, 'latency': 'normal',
                        'temperature': 0.7, 'top_p': 0.7, 'prosody': {'speed': 1.0}}).encode()  # user rule: speed always 1.0
@@ -214,9 +285,17 @@ def line_timing(wav, lines):
 
 
 def voice(lines, work):
-    """reel.voice's contract (wav, timing, total): the whole script in ONE Fish request (sentence by sentence would need a
-    request each), 0.25 s lead, loudness -14 LUFS, 48 kHz."""
-    raw = _fish('\n'.join(lines), os.path.join(work, 'voice_raw.wav'))
+    """reel.voice's contract (wav, timing, total): the whole script in ONE request, 0.25 s lead, -14 LUFS, 48 kHz.
+    Waits for the picture search first: a story without enough pictures never spends one of the 10 daily F1 voices."""
+    PICTURES_READY.wait(1800)
+    words = sum(len(l.split()) for l in lines)
+    need = max(10, int(words / 2.4 / reel.MAX_PIECE * 0.9))  # F1 MEASURED ~2.4 words/s (38 words = 15.6 s)
+    if PICTURES['n'] is None or PICTURES['n'] < need:
+        raise RuntimeError('only {} usable pictures for ~{} pieces: voice not requested'.format(PICTURES['n'], need))
+    raw = os.path.join(work, 'voice_raw.wav')
+    if not _f1('\n'.join(lines), raw):
+        print('  F1 voice: both free models used up today -> Fish voice for this Reel', flush=True)
+        _fish('\n'.join(lines), raw)
     timing = [(a + 0.25, b + 0.25) for a, b in line_timing(raw, lines)]
     wav = os.path.join(work, 'voice.wav')
     subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-i', raw, '-af', 'adelay=250|250,loudnorm=I=-14:TP=-1:LRA=11',
@@ -225,6 +304,16 @@ def voice(lines, work):
 
 
 reel.voice = voice
+_build = reel.build
+
+
+def build(*a, **k):
+    PICTURES['n'] = None
+    PICTURES_READY.clear()  # each story waits for its OWN picture search
+    return _build(*a, **k)
+
+
+reel.build = build
 reel.word_times = lambda *a, **k: None  # word timing exists only for captions
 
 
