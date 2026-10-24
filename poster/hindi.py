@@ -59,8 +59,12 @@ ai.PICK = ai.PICK.replace(
     '"<4-8 word ENGLISH news search query for this exact story>", "query_hi": "<4-8 word HINDI (Devanagari) search query '
     'for the same story>"').replace('NFL, NBA, MLB,', 'CRICKET, NFL, NBA, MLB,')
 moments.SPORTS_TAGS = moments.SPORTS_TAGS | {'CRICKET'}  # sports stories use photos only (leagues claim hardest)
+# RESEARCHED 2026-10-24: ANI struck YouTubers for 9-11 s clips and demanded Rs 15-48 lakh licences (BOOM, SpicyIP);
+# Prasar Bharati/DD strikes clips of Parliament and PM speeches (Scroll, MediaNama) -> their footage is never cut
 moments.STRICT = re.compile(moments.STRICT.pattern[:-3] + r'|bcci|ipl|icc|star sports|jiocinema|jiohotstar|hotstar|sony ?liv|'
-                            r'sony sports|t-series|zee music|tips official|yrf|yash raj|dharma|saregama|eros)\b', re.I)
+                            r'sony sports|t-series|zee music|tips official|yrf|yash raj|dharma|saregama|eros|'
+                            r'ani|ani news|asian news international|prasar bharati|doordarshan|dd news|dd india|sansad tv|'
+                            r'lok sabha tv|rajya sabha tv)\b', re.I)
 moments.WIDE_ONLY, moments.PREFER_VERTICAL = False, True
 # MEASURED 2026-10-24 (Daler Mehndi story): 18 usable moments for 20 pieces -> more clips per story, and pieces up to
 # 3.5 s (user: B-roll under 3-4 s) so a 50 s Reel needs ~15 pieces instead of ~19
@@ -95,8 +99,6 @@ def pick_stories(cands, recent):
 
 def yt_search(query, subject_words, n=10):
     out = _yt_search(query, subject_words, n)
-    seen = {v['id'] for v in out}
-    out += [v for v in _yt_search(query + ' ANI', subject_words, n) if v['id'] not in seen]  # agency footage of the event
     for v in out:
         v['own'] = v['own'] or bool(AGENCY.search(v['channel']))  # find() puts these first
     if query in HI_QUERY:
@@ -136,9 +138,9 @@ sources.articles = articles
 _find = moments.find
 
 
-# raw event footage from news agencies / official channels: real pictures with only a small logo (user 2026-10-24: "not
-# able to find exact images and clips")
-AGENCY = re.compile(r'(?i)\b(ani|ani news|dd news|doordarshan|pib|sansad tv|pmo|narendra modi|mea ?india|airnews|ians)\b')
+# official channels whose material may be reused (PIB: "may be reproduced free of charge, no prior approval", source
+# acknowledged) are tried first. NOT ANI / DD / Sansad TV: they strike short clips (see STRICT)
+AGENCY = re.compile(r'(?i)\b(pib|pib india|pmo|narendra modi|mea ?india)\b')
 PICTURES = {'n': None}
 PICTURES_READY = threading.Event()
 
