@@ -45,6 +45,9 @@ def pack(work, plan, files, seg_lens, wav, ass, total, sfx_dir, hook=None):
               for n, (p, f) in enumerate(zip(plan, files))]
     job = os.path.join(work, 'job.json')
     spec = {'pieces': pieces, 'plan': plan, 'total': total}
+    from . import reel
+    if reel.SUBS_FILTER != 'subtitles={ass}:fontsdir={fonts}':  # a profile's text filter (Hindi: complex shaping)
+        spec['subs_filter'] = reel.SUBS_FILTER
     if hook:  # an opening clip with its own sound (Hindi profile only)
         spec['hook'] = {'src': os.path.basename(hook['src']), 'dur': hook['dur'], 'cx': hook.get('cx'), 'sound': bool(hook.get('sound'))}
         files = list(files) + [hook['src']]

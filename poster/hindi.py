@@ -364,7 +364,100 @@ def no_text(headline, page, lines, timing, total, plan, facts, names, path, word
                           'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n')
 
 
-reel._overlay_ass = no_text
+reel.SUBS_FILTER = 'ass={ass}:fontsdir={fonts}:shaping=complex'
+
+# ---- on-screen key phrases (user 2026-10-24: "see how DW Hindi adds text on Reels ... invent better text placing in that
+# style"). MEASURED on 3 DW Hindi Reels: short 2-line key phrases (not subtitles), each line in its own tight box, left
+# lower-middle, key words in a 2nd colour; name in white + role in a small box; a big number with an underline. Ours:
+# deep red boxes, saffron-yellow key words, Noto Sans Devanagari ExtraBold (OFL) ---------------------------------------
+SCREEN = """You design the ON-SCREEN TEXT for a vertical Hindi news Reel (short key phrases like the best news pages, never
+subtitles). The narration lines are below with their numbers. Return JSON:
+{{"phrases": [{{"line": <line number>, "text": "<key phrase in Hindi Devanagari, 3-8 words, the punch of that moment; wrap 1-2
+  words to highlight in *asterisks*>"}}],
+  "names": [{{"line": <line where the person is first mentioned>, "name": "<name in Hindi>", "name_en": "<the same name in English>",
+  "role": "<role in Hindi, <= 5 words>"}}],
+  "number": {{"line": <line with the most striking number, or -1>, "text": "<that number in digits + unit in Hindi, <= 3 words>"}}}}
+Rules: a phrase on about every second line (never two lines in a row); line 0 ALWAYS gets the hook phrase; only facts from
+the lines; no hashtags, no emojis.
+LINES:
+{lines}"""
+RED, YELLOW = '&H002E10C8', '&H0000D4FF'  # ASS colours are BGR: #C8102E deep red, #FFD400 saffron-yellow
+FONT_HI = 'Noto Sans Devanagari ExtraBold'
+
+
+def _wrap(text, width=15):
+    """at most 2 lines, split at the space nearest the middle when longer than `width` letters"""
+    if len(text.replace('*', '')) <= width or ' ' not in text:
+        return [text]
+    mid, spaces = len(text) // 2, [i for i, c in enumerate(text) if c == ' ']
+    cut = min(spaces, key=lambda i: abs(i - mid))
+    return [text[:cut].strip(), text[cut:].strip()]
+
+
+def _hl(text):
+    """*word* -> that word in saffron-yellow (ASS colour tags); braces in the text can never break the line"""
+    text = text.replace('{', '(').replace('}', ')')
+    return re.sub(r'\*([^*]+)\*', lambda m: '{\\c' + YELLOW + '&}' + m.group(1) + '{\\c&HFFFFFF&}', text)
+
+
+def screen_text(lines, timing, plan, path):
+    """Writes the Reel's ASS: key phrases, name tags (only over a picture that shows that person), one big number."""
+    try:
+        spec = ai.gemini(SCREEN.format(lines='\n'.join('{} | {}'.format(i, l) for i, l in enumerate(lines))), chain='best')
+    except Exception as e:  # noqa: BLE001 - optional: the Reel is fine without text
+        print('  screen text skipped: {}: {}'.format(type(e).__name__, str(e)[:100]), flush=True)
+        spec = {}
+    if not isinstance(spec, dict):
+        spec = {}
+    T = reel._ass_time
+    ev = []
+    for ph in spec.get('phrases') or []:
+        i = ph.get('line') if isinstance(ph, dict) else None
+        if not isinstance(i, int) or not 0 <= i < len(timing) or not ph.get('text'):
+            continue
+        a, b = timing[i][0] + 0.15, timing[i][1] - 0.1
+        rows = _wrap(ph['text'])
+        for k, row in enumerate(rows):
+            y = 1290 - (len(rows) - 1 - k) * 128  # MEASURED DW: text ~5.5 % of the height (ours was 3.3 %)
+            ev.append('Dialogue: 3,{},{},Key,,0,0,0,,{{\\move(30,{y},72,{y},0,160)\\fad(90,120)}}{t}'.format(
+                T(a + 0.06 * k), T(b), y=y, t=_hl(row)))
+    def piece_at(t):
+        return next((p for p in plan if p['a'] <= t < p['b']), None)
+    for nm in spec.get('names') or []:
+        i = nm.get('line') if isinstance(nm, dict) else None
+        if not isinstance(i, int) or not 0 <= i < len(timing) or not nm.get('name'):
+            continue
+        a = timing[i][0] + 0.3
+        p = piece_at(a)
+        words = [w for w in re.findall(r'[a-z]+', (nm.get('name_en') or '').lower()) if len(w) >= 3]
+        desc = (p or {}).get('moment', {}).get('desc', '').lower()
+        if not (p and p['moment'].get('kind') == 'photo' and words and any(w in desc for w in words)):
+            continue  # never a name over someone else's picture (the US Page once put "BEARS" over a Patriots player)
+        b = min(timing[i][1], a + 2.8)
+        ev.append('Dialogue: 4,{},{},NameT,,0,0,0,,{{\\pos(72,900)\\fad(100,120)}}{}'.format(T(a), T(b), _hl(nm['name'])))
+        if nm.get('role'):
+            ev.append('Dialogue: 4,{},{},Role,,0,0,0,,{{\\pos(78,975)\\fad(100,120)}}{}'.format(T(a + 0.1), T(b), _hl(nm['role'])))
+        break  # one name tag per Reel at most (DW: on the person when they first appear)
+    num = spec.get('number') if isinstance(spec.get('number'), dict) else {}
+    i = num.get('line')
+    if isinstance(i, int) and 0 <= i < len(timing) and num.get('text'):
+        a = timing[i][0] + 0.2
+        b = min(timing[i][1], a + 2.4)
+        ev.append('Dialogue: 5,{},{},Num,,0,0,0,,{{\\pos(540,860)\\fad(80,140)\\fscx70\\fscy70\\t(0,180,\\fscx100\\fscy100)}}{}'.format(
+            T(a), T(b), num['text'].replace('{', '(').replace('}', ')')))
+        ev.append('Dialogue: 5,{},{},Bar,,0,0,0,,{{\\pos(540,965)\\fad(80,140)\\p1}}m -330 0 l 330 0 330 18 -330 18{{\\p0}}'.format(T(a + 0.15), T(b)))
+    head = ('[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 2\n\n[V4+ Styles]\n'
+            'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, '
+            'StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n'
+            'Style: Key,{f},92,&H00FFFFFF,&H00FFFFFF,{r},{r},0,0,0,0,100,100,0,0,3,18,0,1,60,60,60,1\n'
+            'Style: NameT,{f},84,&H00FFFFFF,&H00FFFFFF,&H00141414,&H00000000,0,0,0,0,100,100,0,0,1,5,2,1,60,60,60,1\n'
+            'Style: Role,{f},56,&H00FFFFFF,&H00FFFFFF,{r},{r},0,0,0,0,100,100,0,0,3,10,0,1,60,60,60,1\n'
+            'Style: Num,{f},190,&H00FFFFFF,&H00FFFFFF,&H00141414,&H00000000,0,0,0,0,100,100,0,0,1,7,3,5,60,60,60,1\n'
+            'Style: Bar,Arial,20,{y},{y},{y},{y},0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n\n[Events]\n'
+            'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n').format(f=FONT_HI, r=RED, y=YELLOW)
+    open(path, 'w').write(head + '\n'.join(ev) + '\n')
+    print('  screen text: {} phrases, {} name tags, {} number'.format(
+        sum(1 for e in ev if ',Key,' in e), sum(1 for e in ev if ',NameT,' in e), sum(1 for e in ev if ',Num,' in e)), flush=True)
 reel.overlay_ok = lambda *a, **k: None  # no fact boxes / name titles (and so none of their sound effects)
 _edit = reel.edit_plan
 
@@ -382,7 +475,10 @@ reel.edit_plan = edit_plan
 
 # ---- strict picture check -----------------------------------------------------------------------------------------------
 def _langs():
-    out = subprocess.run(['tesseract', '--list-langs'], capture_output=True, text=True).stdout.split()
+    try:
+        out = subprocess.run(['tesseract', '--list-langs'], capture_output=True, text=True).stdout.split()
+    except OSError:  # no OCR installed on this machine
+        return 'eng'
     # MEASURED: adding guj made it WORSE (a Gujarati infographic fell from 15 words read to 1: the models compete)
     return '+'.join(l for l in ('eng', 'hin', 'pan') if l in out) or 'eng'
 
@@ -673,3 +769,11 @@ def hook(plan, spare, fetch, work):
 
 
 reel.HOOK = hook
+
+
+def overlay_hi(headline, page, lines, timing, total, plan, facts, names, path, words=None):
+    """Hindi on-screen text: key phrases / one name tag / one big number (screen_text), never word-by-word captions."""
+    screen_text(lines, timing, plan, path)
+
+
+reel._overlay_ass = overlay_hi

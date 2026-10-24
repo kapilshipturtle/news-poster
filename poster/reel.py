@@ -203,6 +203,9 @@ VOICE_SECONDS = (40, 70)  # the voice's accepted length (a profile may change it
 SCRIPT_WORDS = '120 to 150'  # the word range a rejected script is told to fix (a profile may change it)
 MAX_JOINS, MAX_EFFECTS = 4, 4  # per Reel: ~18 joins, so 4 accents keeps 78 % cuts; effects never two pieces in a row
 VERIFY = None  # optional fn(plan, files, spare, fetch, names) -> files or None, run once all pictures are fetched
+# how the overlay text is burned in; US default unchanged. Hindi needs the 'ass' filter with COMPLEX shaping (MEASURED:
+# the default rendered 'विदेश' as 'वदिश' and split every conjunct)
+SUBS_FILTER = 'subtitles={ass}:fontsdir={fonts}'
 HOOK = None  # optional fn(plan, spare, fetch, work) -> {'src', 'dur', 'cx'} or None: an opening clip WITH its own sound
 
 EDIT = """You are the editor of a fast, well-edited vertical news Reel (like the best US news pages). The voice-over is fixed and
@@ -701,7 +704,7 @@ def assemble(rendered, plan, wav, ass, total, video):
         out = '[x{}]'.format(k)
         chain.append('{}[{}:v]xfade=transition={}:duration={:.2f}:offset={:.3f}{}'.format(last, k, trans, td, t_end, out))
         last = out
-    graph = ';'.join(chain) + (';' if chain else '') + '{}subtitles={}:fontsdir={},format=yuv420p[v]'.format(last, ass, FONTS)
+    graph = ';'.join(chain) + (';' if chain else '') + '{}{},format=yuv420p[v]'.format(last, SUBS_FILTER.format(ass=ass, fonts=FONTS))
     # audio: the voice, plus the motivated sound effects each delayed to its moment and set well under the voice
     sfx = sfx_events(plan)
     n_v = len(rendered)

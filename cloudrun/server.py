@@ -52,6 +52,7 @@ def render(bucket, job):
                                enumerate(spec['pieces'])))
     marks['render_pieces_s'] = round(time.time() - t1, 1)
     t2 = time.time()
+    reel.SUBS_FILTER = spec.get('subs_filter') or 'subtitles={ass}:fontsdir={fonts}'  # Hindi jobs carry complex shaping
     video = reel.assemble(rendered, spec['plan'], work + '/voice.wav', work + '/overlay.ass', spec['total'], work + '/reel.mp4')
     hk = spec.get('hook')
     if hk:  # an opening clip with its own sound (Hindi jobs only)
