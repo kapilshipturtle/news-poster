@@ -371,7 +371,7 @@ CURRENT = {}
 def build(page, outlets, story, query, subject, tag, work, used=()):
     PICTURES['n'] = None
     PICTURES_READY.clear()  # each story waits for its OWN picture search
-    CURRENT.update(story=story, query=query, work=work, used=set(used), replenished=False)
+    CURRENT.update(story=story, query=query, work=work, used=set(used), replenished=False, fetch_replenished=False)
     return _build(page, outlets, story, query, subject, tag, work, used)
 
 
@@ -731,6 +731,41 @@ def _replenish(plan, spare, names):
         print('  extra picture search "{}": {} new moments'.format(q[:40], len(new)), flush=True)
         if len(spare) >= 8:
             break
+
+
+def replenish_fetch(plan, spare, names):
+    """The downloads ran out of spares (live 2026-10-24: Tilak Varma, 18 moments for 15 pieces): one extra picture search
+    for this stage, separate from the one the final look may still need."""
+    if CURRENT.get('fetch_replenished'):
+        return
+    CURRENT['fetch_replenished'] = True
+    keep = CURRENT.get('replenished')
+    _replenish(plan, spare, names)
+    CURRENT['replenished'] = keep
+
+
+reel.REPLENISH = replenish_fetch
+
+
+def photo(url, out):
+    """moments.photo with the reason printed when a photo is dropped (it was silent: a story failed with no clue why)."""
+    try:
+        raw = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': moments.BING_HEADERS['User-Agent']}),
+                                     timeout=25).read()
+        from PIL import Image
+        import io
+        im = Image.open(io.BytesIO(raw)).convert('RGB')
+        if im.width < 700:
+            print('  photo dropped (only {} px wide): {}'.format(im.width, url[:80]), flush=True)
+            return None
+        im.save(out, quality=92)
+        return out
+    except Exception as e:  # noqa: BLE001 - one photo; a spare replaces it
+        print('  photo dropped ({}: {}): {}'.format(type(e).__name__, str(e)[:60], url[:80]), flush=True)
+        return None
+
+
+moments.photo = photo
 
 
 def verify(plan, files, spare, fetch, names=()):

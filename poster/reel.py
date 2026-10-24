@@ -206,6 +206,7 @@ VERIFY = None  # optional fn(plan, files, spare, fetch, names) -> files or None,
 # how the overlay text is burned in; US default unchanged. Hindi needs the 'ass' filter with COMPLEX shaping (MEASURED:
 # the default rendered 'विदेश' as 'वदिश' and split every conjunct)
 SUBS_FILTER = 'subtitles={ass}:fontsdir={fonts}'
+REPLENISH = None  # optional fn(plan, spare, names): more spare moments when the downloads run out (PROFILE=hi); US: none
 HOOK = None  # optional fn(plan, spare, fetch, work) -> {'src', 'dur', 'cx'} or None: an opening clip WITH its own sound
 
 EDIT = """You are the editor of a fast, well-edited vertical news Reel (like the best US news pages). The voice-over is fixed and
@@ -549,11 +550,15 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
     with ThreadPoolExecutor(3) as ex:  # 3 downloads at a time (YouTube pacing still applies per request)
         files = list(ex.map(lambda n: fetch(n, plan[n]['moment']), range(len(plan))))
     for n, p in enumerate(plan):  # a moment that could not be fetched is replaced by an unused one
-        while not files[n] and spare:
-            cand = spare.pop(0)
-            files[n] = fetch(n, cand)
-            if files[n]:
-                p['moment'] = cand
+        for attempt in range(2):
+            while not files[n] and spare:
+                cand = spare.pop(0)
+                files[n] = fetch(n, cand)
+                if files[n]:
+                    p['moment'] = cand
+            if files[n] or not REPLENISH or attempt:
+                break
+            REPLENISH(plan, spare, names)
         if not files[n]:
             return {'skip': 'could not fetch enough moments'}
     stage('fetched {} sources'.format(len(files)))
