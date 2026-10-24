@@ -95,7 +95,7 @@ moments.MAX_VIDEOS, moments.PER_VIDEO = 7, 3
 # and loaded the VM the US Page shares -> cut on existing keyframes (stream copy: no encoding; a clip may start a
 # couple of seconds early, and the 3-frame checks + final look judge what is really in it)
 moments.CUT_EXTRA = []
-reel.MAX_PIECE = 4.0  # user: B-roll under 3-4 s; the final check left too few spares at 3.5 s
+reel.MAX_PIECE = 5.0  # user 2026-10-24 "longer photo shots": ~20% fewer pictures a Reel (4.0 left 16 of 22 builds short)
 moments.CHECK = moments.CHECK.replace('the picture editor of a US news page', 'the picture editor of an Indian news page').replace(
     'Return JSON: {{"<sheet letter>": {{"<number>": {{"keep": true|false, "desc": "what it shows, <= 12 words"}}}}}} for every number.',
     'ALSO REJECT (the final check refuses these, so they would only waste a spare): a TV graphic, show title card, '
@@ -111,8 +111,13 @@ HI_QUERY = {}
 _pick, _yt_search, _bing = ai.pick_stories, moments.yt_search, moments.bing_images
 
 
+VISUAL = {'ENTERTAINMENT', 'CRICKET', 'SPORTS', 'WEATHER', 'SCIENCE', 'TECH'} | set(moments.SPORTS_TAGS)
+
+
 def pick_stories(cands, recent):
-    picks = _pick(cands, recent)
+    """User 2026-10-24 "prefer visual stories": MEASURED, Indian politics mostly fails on pictures (TV-graphic packages),
+    so stories with clean real footage go first; the viral order is kept inside each group; politics still runs."""
+    picks = sorted(_pick(cands, recent), key=lambda p: (p.get('tag') or '').upper() not in VISUAL)
     for p in picks:
         if isinstance(p.get('query_hi'), str) and p['query_hi'].strip():
             HI_QUERY[p['query']] = p['query_hi'].strip()
@@ -518,10 +523,12 @@ def _ocr(img):
             im.convert('RGB').save(small)
     except OSError:
         pass
-    try:
-        r = subprocess.run(['tesseract', small, '-', '-l', LANGS, '--psm', '11', 'tsv'], capture_output=True, timeout=90)
+    try:  # MEASURED on the VM: 1 thread 32 s vs 79 s default (threads fight over the e2-micro's shared CPU)
+        r = subprocess.run(['tesseract', small, '-', '-l', LANGS, '--psm', '11', 'tsv'], capture_output=True, timeout=60,
+                           env=dict(os.environ, OMP_THREAD_LIMIT='1'))
     except subprocess.TimeoutExpired:
-        return 99, 9  # unreadable in time: refused (only this picture; a spare replaces it)
+        return None  # unread in time: not refused here, the final look at the whole Reel judges it (MEASURED 2026-10-24:
+        # 4 of 5 photos refused for a timeout were clean: planes, MPs protesting)
     finally:
         if small != img and os.path.exists(small):
             os.remove(small)
@@ -560,8 +567,11 @@ def text_heavy(path, max_words=6):
             subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-ss', '{:.2f}'.format(t), '-i', path, '-frames:v', '1', f])
             frames.append(f)
     try:
-        counts = [_ocr(f) for f in frames]
-        bad = any(w > max_words or b >= 2 for w, b in counts)
+        counts = [c for c in (_ocr(f) for f in frames) if c]
+        # user 2026-10-24 "allow text inside the scene": big words count from 4 (MEASURED on 42 refusals: >= 2 refused an FBI
+        # vest, a "Gate 7" sign and a name plate; now all 7 clean ones pass, 26 of 35 TV graphics are still refused here and
+        # the other 9 (8 OCR timeouts, 1 anchor shot) go to the final look)
+        bad = any(w > max_words or b >= 4 for w, b in counts)
         if bad:  # kept for review (deleted with the work folder): refusals are measured, not guessed
             import shutil
             keep = os.path.join(os.path.dirname(path), 'refused')
@@ -595,7 +605,8 @@ Mark a piece BAD when ANY of these is true:
 - it is blank, black, blurry, or the clip's frames jump to unrelated pictures;
 - the person or thing the piece should show is not in the frame (e.g. only flowers, a wall or a bystander are visible,
   because the subject moved out of the crop).
-A broadcaster's small corner logo or microphones with channel logos are fine.
+A broadcaster's small corner logo or microphones with channel logos are fine. Text that is physically part of the real
+scene is fine too: protest placards and banners held by people, shop and street signs, name plates, words on clothing.
 Return JSON: {{"bad": [{{"n": <piece number>, "why": "<= 10 words"}}]}} (an empty list when every piece is fine)."""
 
 
