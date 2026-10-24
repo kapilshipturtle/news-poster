@@ -5,6 +5,7 @@ viral Indian stories; Hindi + English searches; pictures fill the phone screen (
 around the subject); no captions or other text on screen; strict picture checks (measured on the test Reels: one-frame
 English-only OCR let an app advert, news banners, subtitles and a Punjabi banner through)."""
 import json
+import math
 import os
 import re
 import subprocess
@@ -337,8 +338,9 @@ def voice(lines, work):
     Waits for the picture search first: a story without enough pictures never spends one of the 10 daily F1 voices."""
     PICTURES_READY.wait(1800)
 
-    def need_for(ls):  # F1 MEASURED ~2.4 words/s (38 words = 15.6 s)
-        return max(10, int(sum(len(l.split()) for l in ls) / 2.4 / reel.MAX_PIECE * 0.9))
+    def need_for(ls):  # F1 MEASURED ~2.4 words/s (38 words = 15.6 s); pieces end on sentence breaks, so they average
+        # 0.8 x MAX_PIECE (MEASURED 2026-10-24: 51 s -> 13, 54 -> 13, 58 -> 15, 59 -> 14 pieces; this gives 13/14/15/15)
+        return max(10, math.ceil(sum(len(l.split()) for l in ls) / 2.4 / (reel.MAX_PIECE * 0.8)))
     found, before = PICTURES['n'] or 0, len(lines)
     # user: a Reel may be 45 s to 2 min -> fewer pictures make a SHORTER Reel, not none (live 2026-10-24: 11 pictures for
     # ~15 pieces was skipped). Detail lines go from the end; the hook (first) and the question (last) stay; >= 110 words
