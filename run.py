@@ -278,6 +278,26 @@ def reel_selftest():
     log('reel selftest ->', out, os.path.getsize(out))
 
 
+def hindi_wants_turn(state=os.environ.get('HI_STATE_DIR', '/home/poster/state-hi')):
+    """Live 2026-10-24: once New York's day began, the US builder (keeping 2 ready) held the one shared build lock almost
+    all the time and the Hindi Page got no turn in India's evening. The US still builds first whenever it has none ready."""
+    from zoneinfo import ZoneInfo
+    try:
+        if not schedule.build_time(ZoneInfo('Asia/Kolkata')):
+            return False
+        q = os.path.join(state, 'reel_queue')
+        if any(os.path.exists(os.path.join(q, d, 'meta.json')) for d in os.listdir(q)):
+            return False
+        pause = os.path.join(state, 'reel_ai_pause.json')
+        if os.path.exists(pause) and json.load(open(pause)).get('until', '') > schedule.now().isoformat():
+            return False
+        today = schedule.now().astimezone(ZoneInfo('Asia/Kolkata')).date()
+        posted = json.load(open(os.path.join(state, 'reels_posted.json')))
+        return sum(1 for r in posted if datetime.fromisoformat(r['time']).astimezone(ZoneInfo('Asia/Kolkata')).date() == today) < 10
+    except (OSError, ValueError):
+        return False
+
+
 def reel_build_one():
     """Keep up to 2 finished Reels ready (built ahead so build time never delays a post)."""
     import shutil
@@ -289,6 +309,8 @@ def reel_build_one():
         return  # outside the hours this Page's Reels are built for (a ready Reel expires after 6 h)
     if schedule._load('reel_ai_pause.json', {}).get('until', '') > schedule.now().isoformat():
         return  # every AI model failed a few minutes ago: no lock-holding retries until the pause ends
+    if os.environ.get('PROFILE') != 'hi' and schedule.reel_queue() and hindi_wants_turn():
+        return  # the US has a Reel ready for its next time: the Hindi Page, with none ready, builds next
     if os.environ.get('PROFILE') == 'hi' and hindi.english_needs_build():  # English first (one shared build lock)
         log('  hindi build waits: the US Page has no Reel ready')
         return
