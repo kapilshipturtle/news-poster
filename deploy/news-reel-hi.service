@@ -14,6 +14,8 @@ Environment=PROFILE=hi
 Environment=REELS_PER_DAY=10
 Environment=REEL_WINDOW=90-1080
 Environment=REEL_GAP_MIN=45
+# catch-up: a slot that passed with no Reel ready is posted as soon as one is (user: at least 10 a day)
+Environment=REEL_CATCHUP=1
 # its own free AI pools, so the two Pages never starve each other (US uses Groq + Gemini Flash)
 Environment=AI_BEST=gemini-3.5-flash-lite,gemma-4-31b-it
 Environment=AI_BULK=gemini-3.5-flash-lite,gemma-4-31b-it

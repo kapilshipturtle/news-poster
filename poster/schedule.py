@@ -107,6 +107,9 @@ REEL_MAX_AGE = timedelta(hours=6)  # a ready Reel older than this is stale news 
 # Hindi Page: 07:00-23:30 IST = REEL_WINDOW=90-1080, REEL_GAP_MIN=45 (12 slots fit; 60 would rarely fit in 16.5 h)
 REEL_WINDOW = tuple(int(x) for x in os.environ.get('REEL_WINDOW', '0-1440').split('-'))
 REEL_GAP = int(os.environ.get('REEL_GAP_MIN', '60'))
+# catch-up (Hindi: REEL_CATCHUP=1): a slot that passed with no Reel ready is posted as soon as one is ready, still
+# REEL_GAP minutes after the last Reel and within the daily cap; default off = the US Page's behaviour (stale slots skipped)
+REEL_CATCHUP = os.environ.get('REEL_CATCHUP') == '1'
 
 
 def reel_plan():
@@ -143,6 +146,12 @@ def reel_due_slot():
     plan = reel_plan()
     if sum(1 for h in reel_history() if h['time'][:10] == plan['day']) >= REELS_PER_DAY:
         return None
+    if REEL_CATCHUP:
+        hist = reel_history()
+        if hist and now() - datetime.fromisoformat(hist[-1]['time']) < timedelta(minutes=REEL_GAP):
+            return None
+        past = [s for s in plan['slots'] if s not in plan['done'] and datetime.fromisoformat(s) <= now()]
+        return past[0] if past else None
     for s in plan['slots']:
         t = datetime.fromisoformat(s)
         if s not in plan['done'] and now() - STALE <= t <= now():
