@@ -310,8 +310,8 @@ def reel_build_one():
     for pick in picks:
         if any(dedupe._overlap(dedupe.words(pick['title']), dedupe.words(r)) >= dedupe.LIMIT for r in recent):
             continue  # this story already has a Reel (a Reel on a story that was also a photo post is fine)
-        if pick['query'] in failed:
-            continue
+        if any(dedupe._overlap(dedupe.words(pick['query']), dedupe.words(q)) >= dedupe.LIMIT for q in failed):
+            continue  # the same story under other words counts as failed too (measured: 21 of 53 tries were repeats)
         work = os.path.join(WORK, 'reel-' + schedule.now().strftime('%Y%m%d-%H%M%S'))
         os.makedirs(work, exist_ok=True)
         outlets, _ = sources.articles(pick['cluster'], pick['query'])
