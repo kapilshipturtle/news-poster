@@ -585,14 +585,20 @@ def verify(plan, files, spare, fetch, names=()):
             _replenish(plan, spare, names)  # 7 of 16 failed Hindi stories on day 1 ran out of spares HERE
         for n in bad:
             files[n] = None
-            if not spare:  # no spares left: new moments from the clips that passed, 6-12 s away (different footage)
+            if not spare and not CURRENT.get('replenished'):  # spares ran out while swapping (downloads/text checks fail too)
+                _replenish(plan, spare, names)
+            if not spare:  # still none: new moments from the clips that passed, 6-12 s away (different footage)
                 for m in good_clips:
                     for dt in (6, -6, 12, -12):
                         t = m['t'] + dt
                         if t >= 0 and (m['vid'], round(t)) not in taken:
                             taken.add((m['vid'], round(t)))
                             spare.append(dict(m, t=t, desc=m.get('desc', '') + ' (nearby moment)'))
-            while spare and not files[n]:
+            while not files[n]:
+                if not spare and not CURRENT.get('replenished'):
+                    _replenish(plan, spare, names)
+                if not spare:
+                    break
                 cand = spare.pop(0)
                 files[n] = fetch(n, cand)
                 if files[n]:
