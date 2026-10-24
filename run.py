@@ -285,6 +285,8 @@ def reel_build_one():
     load_env()
     if schedule.braked() or schedule.reel_braked() or len(schedule.reel_queue()) >= 2:
         return
+    if not schedule.build_time():
+        return  # outside the hours this Page's Reels are built for (a ready Reel expires after 6 h)
     if schedule._load('reel_ai_pause.json', {}).get('until', '') > schedule.now().isoformat():
         return  # every AI model failed a few minutes ago: no lock-holding retries until the pause ends
     if os.environ.get('PROFILE') == 'hi' and hindi.english_needs_build():  # English first (one shared build lock)

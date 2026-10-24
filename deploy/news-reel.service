@@ -11,6 +11,7 @@ Environment=PW_CHANNEL=chrome
 Environment=STATE_DIR=/home/poster/state
 # user 2026-10-24: US 10 Reels/day (Hindi Page takes 10; 20 = the free render allowance)
 Environment=REELS_PER_DAY=10
+Environment=REEL_CATCHUP=1
 Environment=KOKORO_DIR=/home/poster/models
 Environment=SFX_DIR=/home/poster/sfx
 # renders on Cloud Run (measured 75.9 s vs 1530 s here); falls back to this machine on any failure

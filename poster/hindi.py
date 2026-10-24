@@ -21,11 +21,15 @@ FISH_KEY = os.path.expanduser(os.environ.get('FISH_KEY_FILE', '~/.fish_api_key')
 
 
 US_QUEUE = os.environ.get('US_REEL_QUEUE', '/home/poster/state/reel_queue')
+US_TZ, US_WINDOW = 'America/New_York', (360, 1380)  # the US Page's posting hours (its schedule defaults)
 
 
 def english_needs_build():
     """User 2026-10-24: English must not be affected at all. Both Pages share one build lock (the VM's 1 GB); a Hindi build
     started while the US Page has NO Reel ready could make an English slot pass empty -> Hindi waits until English has one."""
+    from zoneinfo import ZoneInfo
+    if not schedule.build_time(ZoneInfo(US_TZ), US_WINDOW):
+        return False  # US night: the US builder is idle, Hindi has the server to itself
     try:
         with open(os.path.join(os.path.dirname(US_QUEUE), 'reel_ai_pause.json')) as f:
             if json.load(f).get('until', '') > schedule.now().isoformat():

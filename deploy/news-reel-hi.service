@@ -12,7 +12,7 @@ Environment=STATE_DIR=/home/poster/state-hi
 Environment=PROFILE=hi
 # user 2026-10-24: Hindi 10 Reels/day, 07:00-23:30 IST (01:30-18:00 UTC), at least 45 min apart
 Environment=REELS_PER_DAY=10
-Environment=REEL_WINDOW=90-1080
+Environment=LOCAL_TZ=Asia/Kolkata
 Environment=REEL_GAP_MIN=45
 # catch-up: a slot that passed with no Reel ready is posted as soon as one is (user: at least 10 a day)
 Environment=REEL_CATCHUP=1

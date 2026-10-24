@@ -3,12 +3,18 @@ import json
 import os
 import random
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from .net import STATE
 
 PER_DAY = int(os.environ.get('POSTS_PER_DAY', '24'))
 MIN_GAP = timedelta(minutes=int(os.environ.get('MIN_GAP_MIN', '20')))
 STALE = timedelta(minutes=60)
+# User 2026-10-24: post only while the audience is awake, 06:00-23:00 on the Page's own clock (US Page: New York time,
+# DST included; Hindi Page: LOCAL_TZ=Asia/Kolkata). A "day" (plans, daily caps) is that local day.
+LOCAL = ZoneInfo(os.environ.get('LOCAL_TZ', 'America/New_York'))
+WINDOW = tuple(int(x) for x in os.environ.get('POST_WINDOW', '360-1380').split('-'))  # minutes after local midnight
+BUILD_EARLY, BUILD_STOP = 120, 20  # Reels are built from 2 h before the window opens until 20 min before it closes
 
 
 def _load(name, default):
@@ -27,22 +33,50 @@ def now():
     return datetime.now(timezone.utc)
 
 
-def _slots_for(day):
-    """PER_DAY random times inside the UTC day, at least MIN_GAP apart. Seeded by the day, so a lost
-    schedule.json regenerates the very same times instead of a fresh set (which could double-post)."""
-    start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
-    rng = random.Random('{}-{}'.format(day.isoformat(), os.environ.get('FB_PAGE_ID', '')))
+def local_day(t=None):
+    return (t or now()).astimezone(LOCAL).date()
+
+
+def _day_of(iso):
+    return datetime.fromisoformat(iso).astimezone(LOCAL).date().isoformat()
+
+
+def _local_minute(tz=None, t=None):
+    t = (t or now()).astimezone(tz or LOCAL)
+    return t.hour * 60 + t.minute
+
+
+def in_window():
+    return WINDOW[0] <= _local_minute() < WINDOW[1]
+
+
+def build_time(tz=None, window=None):
+    """True while Reels for this window should be built (ready Reels expire after 6 h; night builds would be wasted)."""
+    w = window or WINDOW
+    return w[0] - BUILD_EARLY <= _local_minute(tz) < w[1] - BUILD_STOP
+
+
+def _window_slots(day, n, gap_min, seed):
+    """n random times inside the day's posting window, at least gap_min apart, as UTC iso strings. Seeded by the day,
+    so a lost plan file regenerates the very same times instead of a fresh set (which could double-post)."""
+    start = datetime(day.year, day.month, day.day, tzinfo=LOCAL)
+    rng = random.Random(seed)
     while True:
-        mins = sorted(rng.uniform(0, 24 * 60) for _ in range(PER_DAY))
-        if all(b - a >= MIN_GAP.total_seconds() / 60 for a, b in zip(mins, mins[1:])):
-            return [(start + timedelta(minutes=m)).isoformat() for m in mins]
+        mins = sorted(rng.uniform(*WINDOW) for _ in range(n))
+        if all(b - a >= gap_min for a, b in zip(mins, mins[1:])):
+            return [(start + timedelta(minutes=m)).astimezone(timezone.utc).isoformat() for m in mins]
+
+
+def _stale_plan(plan, day):
+    return plan.get('day') != day or plan.get('window') != [str(LOCAL)] + list(WINDOW)
 
 
 def today_plan():
     plan = _load('schedule.json', {})
-    day = now().date().isoformat()
-    if plan.get('day') != day:
-        plan = {'day': day, 'slots': _slots_for(now().date()), 'done': [], 'failed': {}}
+    day = local_day()
+    if _stale_plan(plan, day.isoformat()):
+        slots = _window_slots(day, PER_DAY, MIN_GAP.total_seconds() / 60, '{}-{}'.format(day.isoformat(), os.environ.get('FB_PAGE_ID', '')))
+        plan = {'day': day.isoformat(), 'window': [str(LOCAL)] + list(WINDOW), 'slots': slots, 'done': [], 'failed': {}}
         _save('schedule.json', plan)
     return plan
 
@@ -62,11 +96,11 @@ def history():
 
 def due_slot():
     """The earliest slot that has passed and is not done, if the last post is at least MIN_GAP ago."""
-    if braked():
+    if braked() or not in_window():
         return None
     plan = today_plan()
     hist = history()
-    if sum(1 for h in hist if h['time'][:10] == plan['day']) >= PER_DAY:  # hard daily cap from real history
+    if sum(1 for h in hist if _day_of(h['time']) == plan['day']) >= PER_DAY:  # hard daily cap from real history
         return None
     if hist and now() - datetime.fromisoformat(hist[-1]['time']) < MIN_GAP:
         return None
@@ -103,26 +137,19 @@ def add_reel_media(keys):
 REELS_PER_DAY = int(os.environ.get('REELS_PER_DAY', '10'))
 REEL_QUEUE = os.path.join(STATE, 'reel_queue')
 REEL_MAX_AGE = timedelta(hours=6)  # a ready Reel older than this is stale news and is thrown away
-# when in the UTC day Reels may go out (minutes from 00:00 UTC) and how far apart; defaults = the US Page's settings.
-# Hindi Page: 07:00-23:30 IST = REEL_WINDOW=90-1080, REEL_GAP_MIN=45 (12 slots fit; 60 would rarely fit in 16.5 h)
-REEL_WINDOW = tuple(int(x) for x in os.environ.get('REEL_WINDOW', '0-1440').split('-'))
+# how far apart Reels go out (inside WINDOW); Hindi Page REEL_GAP_MIN=45
 REEL_GAP = int(os.environ.get('REEL_GAP_MIN', '60'))
-# catch-up (Hindi: REEL_CATCHUP=1): a slot that passed with no Reel ready is posted as soon as one is ready, still
-# REEL_GAP minutes after the last Reel and within the daily cap; default off = the US Page's behaviour (stale slots skipped)
+# catch-up (REEL_CATCHUP=1, both Pages since 2026-10-24): a slot that passed with no Reel ready is posted as soon as one is ready, still
+# REEL_GAP minutes after the last Reel and within the daily cap and the window; off = a slot missed by over an hour is skipped
 REEL_CATCHUP = os.environ.get('REEL_CATCHUP') == '1'
 
 
 def reel_plan():
     plan = _load('reel_schedule.json', {})
-    day = now().date().isoformat()
-    if plan.get('day') != day:
-        start = datetime(now().year, now().month, now().day, tzinfo=timezone.utc)
-        rng = random.Random('reels-{}-{}'.format(day, os.environ.get('FB_PAGE_ID', '')))
-        while True:
-            mins = sorted(rng.uniform(*REEL_WINDOW) for _ in range(REELS_PER_DAY))
-            if all(b - a >= REEL_GAP for a, b in zip(mins, mins[1:])):  # Reels at least REEL_GAP minutes apart
-                break
-        plan = {'day': day, 'slots': [(start + timedelta(minutes=m)).isoformat() for m in mins], 'done': []}
+    day = local_day()
+    if _stale_plan(plan, day.isoformat()):
+        slots = _window_slots(day, REELS_PER_DAY, REEL_GAP, 'reels-{}-{}'.format(day.isoformat(), os.environ.get('FB_PAGE_ID', '')))
+        plan = {'day': day.isoformat(), 'window': [str(LOCAL)] + list(WINDOW), 'slots': slots, 'done': []}
         _save('reel_schedule.json', plan)
     return plan
 
@@ -141,10 +168,10 @@ def reel_history():
 
 
 def reel_due_slot():
-    if braked() or reel_braked():
+    if braked() or reel_braked() or not in_window():
         return None
     plan = reel_plan()
-    if sum(1 for h in reel_history() if h['time'][:10] == plan['day']) >= REELS_PER_DAY:
+    if sum(1 for h in reel_history() if _day_of(h['time']) == plan['day']) >= REELS_PER_DAY:
         return None
     if REEL_CATCHUP:
         hist = reel_history()
