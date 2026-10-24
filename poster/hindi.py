@@ -371,7 +371,7 @@ CURRENT = {}
 def build(page, outlets, story, query, subject, tag, work, used=()):
     PICTURES['n'] = None
     PICTURES_READY.clear()  # each story waits for its OWN picture search
-    CURRENT.update(story=story, query=query, work=work, used=set(used), replenished=False, fetch_replenished=False)
+    CURRENT.update(story=story, query=query, work=work, used=set(used), replenished=False, fetch_replenished=False, hashes=[])
     return _build(page, outlets, story, query, subject, tag, work, used)
 
 
@@ -446,6 +446,8 @@ def screen_text(lines, timing, plan, path):
             y = 1290 - (len(rows) - 1 - k) * 128  # MEASURED DW: text ~5.5 % of the height (ours was 3.3 %)
             ev.append('Dialogue: 3,{},{},Key,,0,0,0,,{{\\move(30,{y},72,{y},0,160)\\fad(90,120)}}{t}'.format(
                 T(a + 0.06 * k), T(b), y=y, t=_hl(row)))
+    name_on = None
+
     def piece_at(t):
         return next((p for p in plan if p['a'] <= t < p['b']), None)
     for nm in spec.get('names') or []:
@@ -459,6 +461,7 @@ def screen_text(lines, timing, plan, path):
         if not (p and p['moment'].get('kind') == 'photo' and words and any(w in desc for w in words)):
             continue  # never a name over someone else's picture (the US Page once put "BEARS" over a Patriots player)
         b = min(timing[i][1], a + 2.8)
+        name_on = (a, b)
         ev.append('Dialogue: 4,{},{},NameT,,0,0,0,,{{\\pos(72,900)\\fad(100,120)}}{}'.format(T(a), T(b), _hl(nm['name'])))
         if nm.get('role'):
             ev.append('Dialogue: 4,{},{},Role,,0,0,0,,{{\\pos(78,975)\\fad(100,120)}}{}'.format(T(a + 0.1), T(b), _hl(nm['role'])))
@@ -467,7 +470,12 @@ def screen_text(lines, timing, plan, path):
     i = num.get('line')
     if isinstance(i, int) and 0 <= i < len(timing) and num.get('text'):
         a = timing[i][0] + 0.2
+        if name_on and a < name_on[1] and name_on[0] < a + 2.4:  # live 2026-10-24: "11 साल" landed on the name tag
+            a = name_on[1] + 0.15
         b = min(timing[i][1], a + 2.4)
+    else:
+        a = b = 0
+    if b - a >= 1.2:  # a number squeezed under 1.2 s by the name tag is left out
         ev.append('Dialogue: 5,{},{},Num,,0,0,0,,{{\\pos(540,860)\\fad(80,140)\\fscx70\\fscy70\\t(0,180,\\fscx100\\fscy100)}}{}'.format(
             T(a), T(b), num['text'].replace('{', '(').replace('}', ')')))
         ev.append('Dialogue: 5,{},{},Bar,,0,0,0,,{{\\pos(540,965)\\fad(80,140)\\p1}}m -330 0 l 330 0 330 18 -330 18{{\\p0}}'.format(T(a + 0.15), T(b)))
@@ -559,6 +567,27 @@ def _ocr(img):
     return words, big
 
 
+def _dhash(img):
+    from PIL import Image
+    g = Image.open(img).convert('L').resize((9, 8))
+    px = list(g.getdata())
+    return sum(1 << i for i in range(64) if px[i // 8 * 9 + i % 8] > px[i // 8 * 9 + i % 8 + 1])
+
+
+def _seen_before(img):
+    """Live 2026-10-24 (chess Reel): one photo from two web addresses was shown twice; media keys compare addresses only.
+    A difference hash survives resizing and recompression; 10 of 64 bits apart or less = the same picture."""
+    try:
+        h = _dhash(img)
+    except Exception:  # noqa: BLE001 - unreadable frame: the other checks decide
+        return False
+    seen = CURRENT.setdefault('hashes', [])
+    if any(bin(h ^ x).count('1') <= 10 for x in seen):
+        return True
+    seen.append(h)
+    return False
+
+
 def text_heavy(path, max_words=6):
     """3 frames per clip (start, middle, end), OCR in English + Hindi + Punjabi, and a clip with a shot change inside is
     refused (a fast-cut news package drifts to other pictures: one went from border troops to Xi Jinping)."""
@@ -577,6 +606,9 @@ def text_heavy(path, max_words=6):
             subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-ss', '{:.2f}'.format(t), '-i', path, '-frames:v', '1', f])
             frames.append(f)
     try:
+        if _seen_before(frames[len(frames) // 2]):
+            print('  same picture as one already in this Reel, refused', flush=True)
+            return True
         counts = [c for c in (_ocr(f) for f in frames) if c]
         # user 2026-10-24 "allow text inside the scene": big words count from 4 (MEASURED on 42 refusals: >= 2 refused an FBI
         # vest, a "Gate 7" sign and a name plate; now all 7 clean ones pass, 26 of 35 TV graphics are still refused here and
