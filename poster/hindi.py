@@ -336,8 +336,18 @@ def voice(lines, work):
     """reel.voice's contract (wav, timing, total): the whole script in ONE request, 0.25 s lead, -14 LUFS, 48 kHz.
     Waits for the picture search first: a story without enough pictures never spends one of the 10 daily F1 voices."""
     PICTURES_READY.wait(1800)
-    words = sum(len(l.split()) for l in lines)
-    need = max(10, int(words / 2.4 / reel.MAX_PIECE * 0.9))  # F1 MEASURED ~2.4 words/s (38 words = 15.6 s)
+
+    def need_for(ls):  # F1 MEASURED ~2.4 words/s (38 words = 15.6 s)
+        return max(10, int(sum(len(l.split()) for l in ls) / 2.4 / reel.MAX_PIECE * 0.9))
+    found, before = PICTURES['n'] or 0, len(lines)
+    # user: a Reel may be 45 s to 2 min -> fewer pictures make a SHORTER Reel, not none (live 2026-10-24: 11 pictures for
+    # ~15 pieces was skipped). Detail lines go from the end; the hook (first) and the question (last) stay; >= 110 words
+    # (~45 s). In place: build uses this same list for the pieces and the screen text.
+    while found < need_for(lines) and len(lines) > 9 and sum(len(l.split()) for l in lines[:-2] + lines[-1:]) >= 110:
+        lines[:] = lines[:-2] + lines[-1:]
+    if len(lines) < before:
+        print('  script shortened to {} lines for {} pictures'.format(len(lines), found), flush=True)
+    need = need_for(lines)
     if PICTURES['n'] is None or PICTURES['n'] < need:
         raise RuntimeError('only {} usable pictures for ~{} pieces: voice not requested'.format(PICTURES['n'], need))
     raw = os.path.join(work, 'voice_raw.wav')
