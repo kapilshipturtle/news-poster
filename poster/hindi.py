@@ -587,6 +587,46 @@ def text_heavy(path, max_words=6):
 
 moments.text_heavy = text_heavy
 
+_cut = moments.cut
+CUT_MARGIN = 2.5  # seconds downloaded on each side of a moment, so a camera cut inside it can be stepped around
+
+
+def _shot_cuts(path):
+    err = subprocess.run(['ffmpeg', '-hide_banner', '-i', path, '-vf', "select='gt(scene,0.35)',showinfo", '-f', 'null', '-'],
+                         capture_output=True, text=True).stderr
+    return [float(x) for x in re.findall(r'pts_time:([\d.]+)', err)]
+
+
+def cut(vid, t, dur, out):
+    """MEASURED 2026-10-24 (5 s shots): 11 of 13 refusals in one build were clips with a camera cut inside (news packages
+    cut every 1-3 s). A wider window is downloaded and the stretch without a cut nearest the moment is kept; a clip with
+    no long enough stretch is kept whole and refused by the same check as before."""
+    a0 = max(0.0, t - CUT_MARGIN)
+    wide = out[:-4] + '-wide.mp4'
+    if not _cut(vid, a0, t - a0 + dur + CUT_MARGIN, wide):
+        return None
+    try:
+        bounds = [0.0] + _shot_cuts(wide) + [_duration(wide)]
+        want, best = t - a0, None
+        for a, b in zip(bounds, bounds[1:]):
+            a, b = a + 0.15, b - 0.1  # clear of the frames at the cut
+            if b - a >= dur:
+                s_ = min(max(want, a), b - dur)
+                if best is None or abs(s_ - want) < abs(best - want):
+                    best = s_
+        if best is None:
+            os.replace(wide, out)
+            return out
+        r = subprocess.run(['nice', '-n', '10', 'ffmpeg', '-loglevel', 'error', '-y', '-ss', '{:.2f}'.format(best), '-i', wide,
+                            '-t', '{:.2f}'.format(dur), '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-c:a', 'aac', out])
+        return out if r.returncode == 0 and os.path.exists(out) else None
+    finally:
+        if os.path.exists(wide):
+            os.remove(wide)
+
+
+moments.cut = cut
+
 # ---- final look at every picture of the Reel together ---------------------------------------------------------------
 FINAL = """You are the last check before a vertical Hindi news Reel about "{story}" is published.
 The sheet shows its pieces in order, each numbered, EXACTLY as the phone screen will show them (already cropped);
@@ -605,6 +645,8 @@ Mark a piece BAD when ANY of these is true:
 - it is blank, black, blurry, or the clip's frames jump to unrelated pictures;
 - the person or thing the piece should show is not in the frame (e.g. only flowers, a wall or a bystander are visible,
   because the subject moved out of the crop).
+Do NOT mark a piece bad only because it shows another moment of the story than its sentence describes: an old photo,
+another event or place of the same people, a portrait or statue of them is normal news B-roll and is fine.
 A broadcaster's small corner logo or microphones with channel logos are fine. Text that is physically part of the real
 scene is fine too: protest placards and banners held by people, shop and street signs, name plates, words on clothing.
 Return JSON: {{"bad": [{{"n": <piece number>, "why": "<= 10 words"}}]}} (an empty list when every piece is fine)."""
