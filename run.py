@@ -285,6 +285,9 @@ def reel_build_one():
     load_env()
     if schedule.braked() or schedule.reel_braked() or len(schedule.reel_queue()) >= 2:
         return
+    if os.environ.get('PROFILE') == 'hi' and hindi.english_needs_build():  # English first (one shared build lock)
+        log('  hindi build waits: the US Page has no Reel ready')
+        return
     page = os.environ.get('FB_PAGE_NAME', 'Dr. Olsson')
     clean_work()
     recent = [h['headline'] for h in schedule.reel_history()[-30:]] + [q['headline'] for q in schedule.reel_queue()]

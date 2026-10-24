@@ -20,6 +20,18 @@ FISH_MODEL = 's2.1-pro-free'  # Fish's free model (same model as paid s2.1-pro; 
 FISH_KEY = os.path.expanduser(os.environ.get('FISH_KEY_FILE', '~/.fish_api_key'))
 
 
+US_QUEUE = os.environ.get('US_REEL_QUEUE', '/home/poster/state/reel_queue')
+
+
+def english_needs_build():
+    """User 2026-10-24: English must not be affected at all. Both Pages share one build lock (the VM's 1 GB); a Hindi build
+    started while the US Page has NO Reel ready could make an English slot pass empty -> Hindi waits until English has one."""
+    try:
+        return os.path.isdir(US_QUEUE) and not any(os.path.exists(os.path.join(US_QUEUE, d, 'meta.json')) for d in os.listdir(US_QUEUE))
+    except OSError:
+        return False
+
+
 def load_env():
     """The shared secrets, then the Hindi Page's own id/token/name in place of the US Page's."""
     net.load_env()
