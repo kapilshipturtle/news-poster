@@ -585,7 +585,8 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
         if hook:
             video = prepend_hook(video, render_piece(hook['src'], 'clip', 'full', 'push_in', hook['dur'] + 0.25,
                                                      os.path.join(work, 'hook_v.mp4'), 'vignette', False, hook.get('cx')),
-                                 hook['src'], hook['dur'], os.path.join(work, 'reel_hook.mp4'))
+                                 hook['src'] if hook.get('sound') else None, hook['dur'], os.path.join(work, 'reel_hook.mp4'),
+                                 hook_whoosh(SFX_DIR))
         stage('assembled')
     kinds = [p['moment']['kind'] for p in plan]
     return {'video': video, 'caption': caption, 'headline': s['headline'], 'seconds': round(total, 1),
@@ -652,21 +653,41 @@ def sfx_events(plan):
     return out
 
 
-def prepend_hook(video, hook_video, hook_audio_src, dur, out):
-    """The opening clip (already rendered full screen with its effect) WITH its own sound, a white flash, then the Reel.
+def prepend_hook(video, hook_video, hook_audio_src, dur, out, sfx=None):
+    """The opening clip (already rendered full screen with its effect), a white flash, then the Reel. Its sound: the clip's
+    own (hook_audio_src), or - when None - a soft whoosh (sfx) landing on the flash, else silence.
     Used only by a profile that sets HOOK (Hindi); the US Page's Reels never pass here."""
     td = 0.2
+    if hook_audio_src:
+        src, head = hook_audio_src, ('[1:a]atrim=0:{d:.3f},asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo,'
+                                     'loudnorm=I=-16:TP=-1.5:LRA=11,afade=t=out:st={fo:.3f}:d=0.25[ha];')
+    elif sfx and os.path.exists(sfx):  # user 2026-10-24: hook WITHOUT clip sound (audio matching is the main claim trigger)
+        n = float(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', sfx],
+                                 capture_output=True, text=True).stdout or 1)
+        ms0 = int(max(0.0, dur - td - n + 0.15) * 1000)
+        src, head = sfx, ('[1:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=-14dB,adelay=' + str(ms0) + '|' + str(ms0)
+                          + ',apad,atrim=0:{d:.3f}[ha];')
+    else:
+        src, head = None, 'anullsrc=r=48000:cl=stereo,atrim=0:{d:.3f}[ha];'
     graph = ('[0:v]setsar=1[h];[2:v]setsar=1[r];[h][r]xfade=transition=fadewhite:duration={td}:offset={o:.3f},format=yuv420p[v];'
-             '[1:a]atrim=0:{d:.3f},asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo,'
-             'loudnorm=I=-16:TP=-1.5:LRA=11,afade=t=out:st={fo:.3f}:d=0.25[ha];'
+             + head +
              '[2:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay={ms}|{ms}[ra];'
              '[ha][ra]amix=inputs=2:normalize=0:duration=longest,alimiter=limit=0.95[a]').format(
         td=td, o=dur - td, d=dur, fo=max(0, dur - 0.25), ms=int((dur - td) * 1000))
-    subprocess.run(['nice', '-n', '10', 'ffmpeg', '-loglevel', 'error', '-y', '-i', hook_video, '-i', hook_audio_src, '-i', video,
+    subprocess.run(['nice', '-n', '10', 'ffmpeg', '-loglevel', 'error', '-y', '-i', hook_video] + (['-i', src] if src else
+                   ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo']) + ['-i', video,
                     '-filter_complex', graph, '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
                     '-g', str(FPS * 2), '-keyint_min', str(FPS * 2), '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000',
                     '-movflags', '+faststart', out], check=True, capture_output=True, timeout=2400)
     return out
+
+
+def hook_whoosh(sfx_dir):
+    """the first whoosh of the sound-effect folder (the muted hook's sound), or None"""
+    if not os.path.isdir(sfx_dir):
+        return None
+    w = sorted(f for f in os.listdir(sfx_dir) if f.startswith('whoosh') and f.endswith('.wav'))
+    return os.path.join(sfx_dir, w[0]) if w else None
 
 
 def assemble(rendered, plan, wav, ass, total, video):

@@ -574,6 +574,9 @@ reel.VERIFY = verify
 # ---- opening clip WITH its own sound (user 2026-10-24: "in starting show original clips for 3 to 4 seconds with effects,
 # keeping the clip's voice, so it increases curiosity") ------------------------------------------------------------------
 HOOK_SECONDS = 3.5
+# user 2026-10-24 (after the copyright research): hook WITHOUT the clip's sound for now (audio matching is the main claim
+# trigger; ANI struck 9-11 s clips) - a soft whoosh into the flash instead. True = the clip's own voice (e.g. PB-SHABD clips)
+HOOK_SOUND = False
 SPEAKING = re.compile(r'(?i)speak|says|said|press|address|interview|statement|podium|rally|speech|briefing|media|talk|बोल|बयान')
 
 
@@ -605,15 +608,16 @@ def hook(plan, spare, fetch, work):
         if text_heavy(f):
             os.path.exists(f) and os.remove(f)
             continue
-        vol = _loudness(f)
-        if vol is None or vol < -38:  # no sound or near silence: no point keeping "the clip's voice"
-            print('  opening clip skipped: sound {} dB'.format(vol), flush=True)
-            os.remove(f)
-            continue
+        if HOOK_SOUND:
+            vol = _loudness(f)
+            if vol is None or vol < -38:  # no sound or near silence: no point keeping "the clip's voice"
+                print('  opening clip skipped: sound {} dB'.format(vol), flush=True)
+                os.remove(f)
+                continue
         if m in spare:
             spare.remove(m)
-        print('  opening clip: {} ({} dB)'.format(m.get('desc', '')[:60], vol), flush=True)
-        return {'src': f, 'dur': HOOK_SECONDS, 'cx': m.get('cx')}
+        print('  opening clip: {}'.format(m.get('desc', '')[:60]), flush=True)
+        return {'src': f, 'dur': HOOK_SECONDS, 'cx': m.get('cx'), 'sound': HOOK_SOUND}
     return None
 
 

@@ -46,7 +46,7 @@ def pack(work, plan, files, seg_lens, wav, ass, total, sfx_dir, hook=None):
     job = os.path.join(work, 'job.json')
     spec = {'pieces': pieces, 'plan': plan, 'total': total}
     if hook:  # an opening clip with its own sound (Hindi profile only)
-        spec['hook'] = {'src': os.path.basename(hook['src']), 'dur': hook['dur'], 'cx': hook.get('cx')}
+        spec['hook'] = {'src': os.path.basename(hook['src']), 'dur': hook['dur'], 'cx': hook.get('cx'), 'sound': bool(hook.get('sound'))}
         files = list(files) + [hook['src']]
     json.dump(spec, open(job, 'w'), default=str)
     out = os.path.join(work, 'in.tar.gz')
