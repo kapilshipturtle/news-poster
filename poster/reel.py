@@ -206,6 +206,7 @@ VERIFY = None  # optional fn(plan, files, spare, fetch, names) -> files or None,
 # how the overlay text is burned in; US default unchanged. Hindi needs the 'ass' filter with COMPLEX shaping (MEASURED:
 # the default rendered 'विदेश' as 'वदिश' and split every conjunct)
 SUBS_FILTER = 'subtitles={ass}:fontsdir={fonts}'
+LOCAL_RENDER = True  # False (Hindi): never render on the 1 GB VM (live 2026-10-25: a full-screen render there ran it out of memory)
 REPLENISH = None  # optional fn(plan, spare, names): more spare moments when the downloads run out (PROFILE=hi); US: none
 HOOK = None  # optional fn(plan, spare, fetch, work) -> {'src', 'dur', 'cx'} or None: an opening clip WITH its own sound
 
@@ -566,7 +567,8 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
         files = VERIFY(plan, files, spare, fetch, names)
         if not files:
             return {'skip': 'pictures failed the final check and no spares were left'}
-        stage('final picture check passed')
+        stage('final picture check passed')  # the check may have merged pieces: lengths follow the final plan
+        seg_lens = [p['b'] - p['a'] + JOIN[plan[n + 1]['into'] if n + 1 < len(plan) else 'cut'][1] for n, p in enumerate(plan)]
     hook = HOOK(plan, spare, fetch, work) if HOOK else None  # a profile's opening clip (PROFILE=hi); the US Page sets none
     if hook:
         stage('opening clip: {:.1f} s with its own sound'.format(hook['dur']))
@@ -581,6 +583,11 @@ def build(page, outlets, story, query, subject, tag, work, used=()):
     if os.environ.get('REEL_RENDER') == 'pack':  # the job is left for a manual Cloud Run render (samples only)
         return {'skip': 'packed for Cloud Run: {}'.format(tar)}
     marks = cloud.render(tar, video)
+    if not marks and not LOCAL_RENDER:  # a profile whose Reels must never render on the VM (Hindi): one more Cloud Run try
+        marks = cloud.render(tar, video)
+        if not marks:
+            raise RuntimeError('Cloud Run render failed twice')  # this story is set aside (a job that kills the renderer
+            # would otherwise come back every 10 minutes)
     if marks:
         stage('rendered + assembled on Cloud Run ({})'.format(marks))
     else:
@@ -677,16 +684,24 @@ def prepend_hook(video, hook_video, hook_audio_src, dur, out, sfx=None):
                           + ',apad,atrim=0:{d:.3f}[ha];')
     else:
         src, head = None, 'anullsrc=r=48000:cl=stereo,atrim=0:{d:.3f}[ha];'
-    graph = ('[0:v]setsar=1[h];[2:v]setsar=1[r];[h][r]xfade=transition=fadewhite:duration={td}:offset={o:.3f},format=yuv420p[v];'
-             + head +
-             '[2:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay={ms}|{ms}[ra];'
-             '[ha][ra]amix=inputs=2:normalize=0:duration=longest,alimiter=limit=0.95[a]').format(
-        td=td, o=dur - td, d=dur, fo=max(0, dur - 0.25), ms=int((dur - td) * 1000))
-    subprocess.run(['nice', '-n', '10', 'ffmpeg', '-loglevel', 'error', '-y', '-i', hook_video] + (['-i', src] if src else
-                   ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo']) + ['-i', video,
-                    '-filter_complex', graph, '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
-                    '-g', str(FPS * 2), '-keyint_min', str(FPS * 2), '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000',
-                    '-movflags', '+faststart', out], check=True, capture_output=True, timeout=2400)
+    k = dict(td=td, o=dur - td, d=dur, fo=max(0, dur - 0.25), ms=int((dur - td) * 1000))
+    vgraph = '[0:v]setsar=1[h];[2:v]setsar=1[r];[h][r]xfade=transition=fadewhite:duration={td}:offset={o:.3f},format=yuv420p[v]'.format(**k)
+    agraph = (head + '[2:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay={ms}|{ms}[ra];'
+              '[ha][ra]amix=inputs=2:normalize=0:duration=longest,alimiter=limit=0.95[a]').format(**k)
+    inputs = ['-i', hook_video] + (['-i', src] if src else ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo']) + ['-i', video]
+    # MEASURED 2026-10-25: picture and sound in ONE command peaked at 10.3 GB (ffmpeg read the Reel far ahead for the sound
+    # and buffered its decoded frames) -> Cloud Run's 4 GiB died, the 1 GB VM fallback died. Apart: 681 MB + 65 MB.
+    v_out, a_out = out[:-4] + '-v.mp4', out[:-4] + '-a.m4a'
+    subprocess.run(['nice', '-n', '10', 'ffmpeg', '-loglevel', 'error', '-y'] + inputs + [
+        '-filter_complex', vgraph, '-map', '[v]', '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
+        '-g', str(FPS * 2), '-keyint_min', str(FPS * 2), v_out], check=True, capture_output=True, timeout=2400)
+    subprocess.run(['nice', '-n', '10', 'ffmpeg', '-loglevel', 'error', '-y'] + inputs + [
+        '-filter_complex', agraph, '-map', '[a]', '-vn', '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000', a_out],
+        check=True, capture_output=True, timeout=1200)
+    subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-i', v_out, '-i', a_out, '-map', '0:v', '-map', '1:a', '-c', 'copy',
+                    '-shortest', '-movflags', '+faststart', out], check=True, capture_output=True, timeout=600)
+    for f in (v_out, a_out):
+        os.remove(f)
     return out
 
 

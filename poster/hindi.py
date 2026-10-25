@@ -779,6 +779,7 @@ def replenish_fetch(plan, spare, names):
 
 
 reel.REPLENISH = replenish_fetch
+reel.LOCAL_RENDER = False  # live 2026-10-25: the fallback render (ffmpeg 789 MB) ran the VM out of memory and offline for 80 min
 
 
 def photo(url, out):
@@ -800,6 +801,40 @@ def photo(url, out):
 
 
 moments.photo = photo
+
+
+MERGE_MAX = 9.0  # seconds a photo may stay on screen when it takes over a dropped piece's time
+
+
+def _merge_out(plan, files, bad):
+    """Live 2026-10-24/25: 12 stories in 27 h (325 min of building) died at the final check with a few pieces still bad.
+    Up to 3 bad pieces leave the Reel and the PHOTOS next to them stay on screen longer (a clip is cut to its exact length,
+    so it never stretches). Only checked pictures remain, none repeated. False = cannot (plan and files untouched)."""
+    if not bad or len(bad) > 3 or len(plan) - len(bad) < 8:
+        return False
+    kept = [i for i in range(len(plan)) if i not in bad]
+    new = [dict(plan[i]) for i in kept]
+    for k in range(len(new) + 1):  # the gap before new[k] (k == len: after the last)
+        a = new[k - 1]['b'] if k else plan[0]['a']
+        b = new[k]['a'] if k < len(new) else plan[-1]['b']
+        if b - a < 0.01:
+            continue
+        prev = new[k - 1] if k and new[k - 1]['moment'].get('kind') == 'photo' else None
+        nxt = new[k] if k < len(new) and new[k]['moment'].get('kind') == 'photo' else None
+        if prev and nxt:
+            prev['b'] = nxt['a'] = (a + b) / 2
+        elif prev:
+            prev['b'] = b
+        elif nxt:
+            nxt['a'] = a
+        else:
+            return False  # only clips around the gap
+    if any(p['b'] - p['a'] > MERGE_MAX for p in new):
+        return False
+    print('  final check: {} piece(s) dropped, neighbouring photos hold longer'.format(len(bad)), flush=True)
+    plan[:] = new
+    files[:] = [files[i] for i in kept]
+    return True
 
 
 def verify(plan, files, spare, fetch, names=()):
@@ -827,12 +862,13 @@ def verify(plan, files, spare, fetch, names=()):
                 print('  final check: piece {} bad: {}'.format(b.get('n'), str(b.get('why'))[:60]), flush=True)
         if not bad:
             return files
-        if rnd == 2:  # still flagged after two rounds of replacements
-            return None
+        if rnd == 2:  # still flagged after two rounds of replacements: dropped if the photos around them can hold
+            return files if _merge_out(plan, files, bad) else None
         good_clips = [p['moment'] for i, p in enumerate(plan) if i not in bad and p['moment'].get('kind') == 'clip']
         taken = {(p['moment'].get('vid'), round(p['moment'].get('t', -1))) for p in plan}
         if len(spare) < len(bad) and not CURRENT.get('replenished'):
             _replenish(plan, spare, names)  # 7 of 16 failed Hindi stories on day 1 ran out of spares HERE
+        drop = set()
         for n in bad:
             files[n] = None
             if not spare and not CURRENT.get('replenished'):  # spares ran out while swapping (downloads/text checks fail too)
@@ -854,7 +890,9 @@ def verify(plan, files, spare, fetch, names=()):
                 if files[n]:
                     plan[n]['moment'] = cand
             if not files[n]:
-                return None
+                drop.add(n)  # no replacement left for this piece
+        if drop and not _merge_out(plan, files, drop):
+            return None
     return None
 
 

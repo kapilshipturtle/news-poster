@@ -349,6 +349,7 @@ def reel_build_one():
             return
         except Exception as e:  # one story failing never stops the builder
             log('  reel skip (error {}: {})'.format(type(e).__name__, str(e)[:120]))
+            traceback.print_exc()  # where it broke (a 'NoneType ... get' skip had no trace for 2 days)
             fail(pick['query'])
             continue
         if res.get('skip'):

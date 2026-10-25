@@ -56,7 +56,10 @@ def _json_from(text):
     if text.startswith('```'):
         text = re.sub(r'^```(json)?|```$', '', text, flags=re.M).strip()
     try:
-        return json.loads(text)
+        out = json.loads(text)
+        if not isinstance(out, (dict, list)):  # live 2026-10-24/25: a fallback model answered null during a Gemini 503
+            raise ValueError('reply is JSON {} , not an object'.format(type(out).__name__))  # and 7 Reels died on .get()
+        return out
     except ValueError:
         for a, b in (('{', '}'), ('[', ']')):
             i, j = text.find(a), text.rfind(b)
