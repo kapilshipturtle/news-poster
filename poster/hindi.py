@@ -98,6 +98,11 @@ moments.MAX_VIDEOS, moments.PER_VIDEO = 7, 3
 moments.CUT_EXTRA = []
 reel.MAX_PIECE = 5.0  # user 2026-10-24 "longer photo shots": ~20% fewer pictures a Reel (4.0 left 16 of 22 builds short)
 moments.CHECK = moments.CHECK.replace('the picture editor of a US news page', 'the picture editor of an Indian news page').replace(
+    # MEASURED 2026-10-25: ~34 of 42 refused downloads were Indian TV frames (NewsX, NDTV, India Speed News) whose chyron WAS
+    # about the story, so this US rule kept them; each then cost a download + ~1.5 min of OCR before being refused
+    "A news channel's own logo or a chyron ABOUT THIS STORY is fine.",
+    'A small channel logo in a corner is fine. ANY other TV text is NOT: reject a frame with a chyron, ticker, headline '
+    'box, lower third, breaking-news banner, or channel graphics framing the picture, even when it is about this story.').replace(
     'Return JSON: {{"<sheet letter>": {{"<number>": {{"keep": true|false, "desc": "what it shows, <= 12 words"}}}}}} for every number.',
     'ALSO REJECT (the final check refuses these, so they would only waste a spare): a TV graphic, show title card, '
     'breaking-news banner, split screen, video play button, or website watermark across the picture; a person who is not '
@@ -536,8 +541,8 @@ def _ocr(img):
     small = img
     try:  # MEASURED: a full-size photo took > 90 s in 3-language OCR and crashed a whole Reel; 1600 px is plenty for text
         im = Image.open(img)
-        if max(im.size) > 1600:
-            im.thumbnail((1600, 1600))
+        if max(im.size) > 1280:  # MEASURED: 1280 vs 1600 px gives the same verdict on 37 of 42 refusals, 75 % of the time
+            im.thumbnail((1280, 1280))
             fd, small = tempfile.mkstemp(suffix='.png')
             os.close(fd)
             im.convert('RGB').save(small)
@@ -602,7 +607,7 @@ def text_heavy(path, max_words=6):
             return True
         d = _duration(path)
         frames = []
-        for t in (0.3, d / 2, max(0.3, d - 0.4)):
+        for t in (0.3, max(0.3, d - 0.4)):  # one shot (cut check above): start + end caught 23 of 25 refusals of 3 frames
             fd, f = tempfile.mkstemp(suffix='.png')
             os.close(fd)
             subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-ss', '{:.2f}'.format(t), '-i', path, '-frames:v', '1', f])

@@ -1,0 +1,7 @@
+[Unit]
+Description=news-poster: clean old work folders, temp files, journal and caches; weekly yt-dlp update
+[Service]
+Type=oneshot
+Nice=15
+ExecStart=/bin/bash /home/poster/news-poster/deploy/cleanup.sh
+TimeoutStartSec=4200

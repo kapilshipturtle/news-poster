@@ -1,0 +1,5 @@
+[Unit]
+Description=news-poster: reboot if the VM loses the metadata server or DNS for 15 minutes
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /home/poster/news-poster/deploy/netwatch.sh

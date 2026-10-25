@@ -33,5 +33,16 @@ install -m 644 /home/poster/news-poster/deploy/news-reel-build.timer /etc/system
 for u in news-reel-hi.service news-reel-hi.timer news-reel-hi-build.service news-reel-hi-build.timer; do
   install -m 644 /home/poster/news-poster/deploy/$u /etc/systemd/system/$u
 done
+for u in news-reel-build news-reel-hi-build; do   # memory limits: a runaway ends the build, never the VM
+  install -d /etc/systemd/system/$u.service.d
+  install -m 644 /home/poster/news-poster/deploy/build-limits.conf /etc/systemd/system/$u.service.d/limits.conf
+done
+for u in news-netwatch.service news-netwatch.timer news-cleanup.service news-cleanup.timer; do
+  install -m 644 /home/poster/news-poster/deploy/$u /etc/systemd/system/$u
+done
+install -d /etc/systemd/journald.conf.d
+install -m 644 /home/poster/news-poster/deploy/journald-size.conf /etc/systemd/journald.conf.d/size.conf
+systemctl restart systemd-journald
 systemctl daemon-reload
+systemctl enable --now news-netwatch.timer news-cleanup.timer
 echo "setup done; enable with: systemctl enable --now news-poster.timer news-reel.timer news-reel-build.timer"
