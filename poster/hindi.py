@@ -218,9 +218,10 @@ def script_problems(s):
     if not 9 <= len(s.get('lines') or []) <= 24:
         p.append('{} lines, need 9-24'.format(len(s.get('lines') or [])))
     words = sum(len(l.split()) for l in s.get('lines') or [])
-    # user 2026-10-24: "reels can be any size from 45 seconds to 2 minutes"; the voice is Fish (male, user 2026-10-25)
-    if not 125 <= words <= 300:  # Fish 2.7 words/s: 125 words = 46 s, 300 = 111 s
-        p.append('{} words, need 125-300'.format(words))
+    # user 2026-10-24: "reels can be any size from 45 seconds to 2 minutes". MEASURED F1: ~2.4 words/s (38 words =
+    # 15.6 s) -> 120-280 words = ~50-117 s (Fish, the fallback, is faster: ~2.9 words/s)
+    if not 120 <= words <= 280:
+        p.append('{} words, need 120-280'.format(words))
     bad = sorted({ch for ch in ' '.join(s.get('lines') or []) if not ALLOWED.match(ch)})
     if bad:
         p.append('characters that are not Hindi or English: {} (write those words in Devanagari)'.format(''.join(bad)))
@@ -332,23 +333,19 @@ def line_timing(wav, lines):
     return list(zip(cuts, cuts[1:]))
 
 
-WPS = 2.7  # Fish male voice, MEASURED 2026-10-25 on the VM: 59 words = 21.7 s
-
-
 def voice(lines, work):
     """reel.voice's contract (wav, timing, total): the whole script in ONE request, 0.25 s lead, -14 LUFS, 48 kHz.
-    User 2026-10-25: the MALE voice only (Fish "शांत हिंदी पुरुष"), never the female F1. Waits for the picture search
-    first: a story without enough pictures never spends a voice."""
+    Waits for the picture search first: a story without enough pictures never spends one of the 10 daily F1 voices."""
     PICTURES_READY.wait(1800)
 
-    def need_for(ls):  # pieces end on sentence breaks, so they average
+    def need_for(ls):  # F1 MEASURED ~2.4 words/s (38 words = 15.6 s); pieces end on sentence breaks, so they average
         # 0.8 x MAX_PIECE (MEASURED 2026-10-24: 51 s -> 13, 54 -> 13, 58 -> 15, 59 -> 14 pieces; this gives 13/14/15/15)
-        return max(10, math.ceil(sum(len(l.split()) for l in ls) / WPS / (reel.MAX_PIECE * 0.8)))
+        return max(10, math.ceil(sum(len(l.split()) for l in ls) / 2.4 / (reel.MAX_PIECE * 0.8)))
     found, before = PICTURES['n'] or 0, len(lines)
     # user: a Reel may be 45 s to 2 min -> fewer pictures make a SHORTER Reel, not none (live 2026-10-24: 11 pictures for
-    # ~15 pieces was skipped). Detail lines go from the end; the hook (first) and the question (last) stay; >= 125 words
+    # ~15 pieces was skipped). Detail lines go from the end; the hook (first) and the question (last) stay; >= 110 words
     # (~45 s). In place: build uses this same list for the pieces and the screen text.
-    while found < need_for(lines) and len(lines) > 9 and sum(len(l.split()) for l in lines[:-2] + lines[-1:]) >= 125:
+    while found < need_for(lines) and len(lines) > 9 and sum(len(l.split()) for l in lines[:-2] + lines[-1:]) >= 110:
         lines[:] = lines[:-2] + lines[-1:]
     if len(lines) < before:
         print('  script shortened to {} lines for {} pictures'.format(len(lines), found), flush=True)
@@ -356,7 +353,9 @@ def voice(lines, work):
     if PICTURES['n'] is None or PICTURES['n'] < need:
         raise RuntimeError('only {} usable pictures for ~{} pieces: voice not requested'.format(PICTURES['n'], need))
     raw = os.path.join(work, 'voice_raw.wav')
-    _fish('\n'.join(lines), raw)  # a Fish outage raises AIUnavailable: the build pauses, the story is not marked failed
+    if not _f1('\n'.join(lines), raw):
+        print('  F1 voice: both free models used up today -> Fish voice for this Reel', flush=True)
+        _fish('\n'.join(lines), raw)
     timing = [(a + 0.25, b + 0.25) for a, b in line_timing(raw, lines)]
     wav = os.path.join(work, 'voice.wav')
     subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-i', raw, '-af', 'adelay=250|250,loudnorm=I=-14:TP=-1:LRA=11',
