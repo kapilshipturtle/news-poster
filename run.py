@@ -278,24 +278,55 @@ def reel_selftest():
     log('reel selftest ->', out, os.path.getsize(out))
 
 
-def hindi_wants_turn(state=os.environ.get('HI_STATE_DIR', '/home/poster/state-hi')):
-    """Live 2026-10-24: once New York's day began, the US builder (keeping 2 ready) held the one shared build lock almost
-    all the time and the Hindi Page got no turn in India's evening. The US still builds first whenever it has none ready."""
+PAGES = {'us': ('/home/poster/state', 'America/New_York'), 'hi': ('/home/poster/state-hi', 'Asia/Kolkata')}
+
+
+def page_need(state, tz, per_day=10):
+    """How far behind its daily plan a Page is: its Reel times due within 90 min (missed ones included, never past the
+    daily cap) minus the Reels it has ready. None = it cannot build now (outside its build hours, paused, braked, 2 ready
+    or its 10 posted)."""
     from zoneinfo import ZoneInfo
+    z, now = ZoneInfo(tz), schedule.now()
+
+    def load(name, default):
+        path = os.path.join(state, name)
+        return json.load(open(path)) if os.path.exists(path) else default
     try:
-        if not schedule.build_time(ZoneInfo('Asia/Kolkata')):
-            return False
+        if not schedule.build_time(z):
+            return None
+        if any(load(f, {}).get('until', '') > now.isoformat() for f in ('reel_ai_pause.json', 'reel_brake.json', 'brake.json')):
+            return None
         q = os.path.join(state, 'reel_queue')
-        if any(os.path.exists(os.path.join(q, d, 'meta.json')) for d in os.listdir(q)):
-            return False
-        pause = os.path.join(state, 'reel_ai_pause.json')
-        if os.path.exists(pause) and json.load(open(pause)).get('until', '') > schedule.now().isoformat():
-            return False
-        today = schedule.now().astimezone(ZoneInfo('Asia/Kolkata')).date()
-        posted = json.load(open(os.path.join(state, 'reels_posted.json')))
-        return sum(1 for r in posted if datetime.fromisoformat(r['time']).astimezone(ZoneInfo('Asia/Kolkata')).date() == today) < 10
-    except (OSError, ValueError):
+        ready = sum(1 for d in os.listdir(q) if os.path.exists(os.path.join(q, d, 'meta.json'))) if os.path.isdir(q) else 0
+        today = now.astimezone(z).date()
+        posted = sum(1 for r in load('reels_posted.json', []) if datetime.fromisoformat(r['time']).astimezone(z).date() == today)
+        left = per_day - posted - ready
+        if ready >= 2 or left <= 0:
+            return None
+        plan = load('reel_schedule.json', {})
+        due = (sum(1 for t in plan.get('slots', []) if t not in plan.get('done', []) and datetime.fromisoformat(t) <= now + timedelta(minutes=90))
+               if plan.get('day') == today.isoformat() else 1)
+        return min(due, left) - ready
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def my_turn(me):
+    """Live 2026-10-25/26: the one build slot was used 10.5 h of 28.7 h. 'English first' made the Hindi Page wait while the
+    US Page, its AI down, kept failing - both idle. Now the Page further behind its plan builds; equal -> the one that
+    started a build less recently, so a Page that keeps failing never blocks the other; a Page that cannot build never
+    blocks at all."""
+    other = 'hi' if me == 'us' else 'us'
+    mine, theirs = page_need(*PAGES[me]), page_need(*PAGES[other])
+    if mine is None:
         return False
+    if theirs is None:
+        return True
+    last = lambda p: (json.load(open(os.path.join(PAGES[p][0], 'last_build.json'))) if os.path.exists(os.path.join(PAGES[p][0], 'last_build.json')) else {}).get('at', '')
+    if (theirs, last(me)) > (mine, last(other)):
+        log('  build turn: {} goes first (behind by {} vs {})'.format(other, theirs, mine))
+        return False
+    return True
 
 
 def reel_build_one():
@@ -309,11 +340,9 @@ def reel_build_one():
         return  # outside the hours this Page's Reels are built for (a ready Reel expires after 6 h)
     if schedule._load('reel_ai_pause.json', {}).get('until', '') > schedule.now().isoformat():
         return  # every AI model failed a few minutes ago: no lock-holding retries until the pause ends
-    if os.environ.get('PROFILE') != 'hi' and schedule.reel_queue() and hindi_wants_turn():
-        return  # the US has a Reel ready for its next time: the Hindi Page, with none ready, builds next
-    if os.environ.get('PROFILE') == 'hi' and hindi.english_needs_build():  # English first (one shared build lock)
-        log('  hindi build waits: the US Page has no Reel ready')
+    if not my_turn('hi' if os.environ.get('PROFILE') == 'hi' else 'us'):  # one shared build slot: the Page further behind
         return
+    schedule._save('last_build.json', {'at': schedule.now().isoformat()})
     page = os.environ.get('FB_PAGE_NAME', 'Dr. Olsson')
     clean_work()
     recent = [h['headline'] for h in schedule.reel_history()[-30:]] + [q['headline'] for q in schedule.reel_queue()]
