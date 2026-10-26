@@ -94,6 +94,8 @@ def storyboard(vid, work):
         j = json.loads(r.stdout)
     except ValueError:
         return []
+    if not isinstance(j, dict):  # live 2026-10-25/26: yt-dlp printed null for some videos and 35 stories died on j.get
+        return []
     w, h = j.get('width') or 0, j.get('height') or 0
     if w and h:
         AR[vid] = w / h

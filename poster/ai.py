@@ -13,8 +13,8 @@ import urllib.request
 CHAINS = {
     # 'groq:' models run on GroqCloud's free plan (MEASURED: 1,000 requests/day per model, 8,000 tokens/min;
     # gpt-oss-120b wrote a 135-word Reel script in 7.5 s, Qwen 3.8 27B read an image in 1.5 s)
-    'best': os.environ.get('AI_BEST', 'gemini-3.8-flash,gemini-3.5-flash,groq:openai/gpt-oss-120b,gemma-4-31b-it').split(','),
-    'bulk': os.environ.get('AI_BULK', 'groq:openai/gpt-oss-120b,groq:qwen/qwen3.8-27b,gemma-4-31b-it').split(','),
+    'best': os.environ.get('AI_BEST', 'gemini-3.8-flash,gemini-3.5-flash,groq:openai/gpt-oss-120b,gemma-4-31b-it,gemini-3.5-flash-lite').split(','),
+    'bulk': os.environ.get('AI_BULK', 'groq:openai/gpt-oss-120b,groq:qwen/qwen3.8-27b,gemma-4-31b-it,gemini-3.5-flash-lite').split(','),
     # 2026-10-23: the only Groq vision model was wrongly marked used up and Gemma answered HTTP 500 for hours, so 19 Reel
     # builds died: a third, separate quota pool (Gemini Flash-Lite, slow but free) backs them up
     'vision': os.environ.get('AI_VISION', 'groq:qwen/qwen3.8-27b,gemma-4-31b-it,gemini-3.5-flash-lite').split(','),
