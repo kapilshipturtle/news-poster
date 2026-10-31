@@ -10,6 +10,7 @@ Runs under PROFILE=hi (Page 3 token, Hindi feeds, OCR + picture checks from hind
 import json
 import os
 import random
+import re
 import shutil
 import struct
 import subprocess
@@ -30,6 +31,13 @@ WINDOWS = [(9 * 60, 11 * 60 + 30), (14 * 60, 16 * 60 + 30), (19 * 60, 21 * 60 + 
 VOICE_DIR = os.environ.get('VIRAL_VOICE_DIR', '/home/poster/voices/shiva-hindi')
 SFX = os.environ.get('VIRAL_SFX', '/home/poster/sfx/viral_hit.wav')  # Meta SC whoosh_2 + impact_1 -6 dB (measured match)
 WORDS = (480, 650)        # the clone reads ~158 words/min (measured 10-31) -> about 3:00-4:10 like his 2:40-4:17
+VIRAL_FEEDS = {  # MEASURED 2026-10-31: these answer with fresh people/oddity stories and direct article links
+    'TV9 Hindi': 'https://www.tv9hindi.com/trending/feed',          # 30 items, dated
+    'India TV': 'https://www.indiatv.in/rssnews/topstory-viral-news.xml',  # 31 items, dated
+    'ABP Live': 'https://www.abplive.com/trending/feed',               # 10 items, dated
+    'News18 Hindi': 'https://hindi.news18.com/rss/khabar/ajab-gajab.xml',  # 200 items, NO dates: counts only with a 2nd outlet
+}  # tested and NOT working: Aaj Tak, Amar Ujala, Jagran, Patrika (404), NDTV (403), Live Hindustan (503), Zee (no answer)
+MAX_USE = 3               # one picture on screen at most 3 times (he repeats pictures too)
 MAX_SHOT = 7.5            # his median shot is 6.6 s; a longer sentence gets two pictures
 moments.PREFER_VERTICAL = False  # the media window is 16:9, not a phone screen
 
@@ -47,8 +55,9 @@ Return JSON: {{"picks": [{{"n": <candidate number>, "query": "<4-8 word ENGLISH 
 "query_hi": "<4-8 word Hindi search query>", "names": ["<the people in it, in English, max 3>"]}}]}}"""
 
 SCRIPT = """Write a Hindi Facebook news video script in the exact style of India's most viral people-story pages.
-Use ONLY facts in the SOURCES. Never invent quotes, numbers, names or events. If the sources are too thin, return
-{{"skip": "<reason>"}}.
+Use ONLY facts in the SOURCES. Never invent quotes, numbers, names or events. If two sources disagree on a detail (an age,
+a number), leave that detail out - do NOT skip the story for it. Return {{"skip": "<reason>"}} only when the sources do not
+say what actually happened.
 
 STRUCTURE (this is what makes people watch to the end):
 1. "teaser": 4 or 5 punchy spoken lines (8-16 words each) BEFORE the story. Each line is a new claim. Use the patterns:
@@ -63,11 +72,13 @@ STRUCTURE (this is what makes people watch to the end):
 Total spoken words (teaser + story): {lo} to {hi}. Simple spoken Hindi like a TV anchor; numbers as Hindi words.
 "headline": ONE sentence split into 4 lines of max 16 characters (it stays on screen the whole video): lines 1-2 are the
 setup, lines 3-4 the payoff, line 3 ends with ".." (e.g. "जिसे घर में रखा" / "उसी मेहमान ने" / "लगाया आरोप.." / "रो पड़ीं शिवानी").
-"title": the Facebook title, Hindi, max 110 characters, hook + contradiction (like the teaser), no hashtags.
-"caption": 2 Hindi sentences that make people watch, then 4 hashtags.
+"title": the Facebook post title in HINDI, max 110 characters, hook + contradiction like the teaser, no hashtags
+(e.g. "इज्जत के चक्कर में मार्विन आची ने शिवानी कुमारी पर लगाया आरोप, फूट फूट कर रोने लगी शिवानी!").
+"hashtags": 5-8 ENGLISH hashtags, lowercase, no spaces: each person's name (e.g. "#shivanikumari", "#marvinachi"),
+the story's key words, and always "#viralvideo" and "#trending".
 
 Return JSON: {{"teaser": [{{"say": "...", "card": ["..", ".."]}}], "story": ["...", "..."], "headline": ["..", "..", "..", ".."],
-"title": "...", "caption": "...", "names": ["<people, English>"]}}
+"title": "...", "hashtags": ["#..", "#.."], "names": ["<people, English>"]}}
 
 SOURCES:
 {sources}"""
@@ -77,7 +88,7 @@ SENTENCES:
 {sents}
 PICTURES (number: what it shows):
 {pics}
-Use each picture at most twice; prefer the picture that shows who or what the sentence talks about; spread them out.
+Use each picture at most 3 times; prefer the picture that shows who or what the sentence talks about; spread them out.
 Return JSON: {{"pick": [<picture number for sentence 0>, <for sentence 1>, ...]}} (exactly {n} numbers)."""
 
 CHECK = """These numbered pictures go into a Hindi news video about: {story}. People in the story: {names}.
@@ -194,8 +205,12 @@ def voice(sentences, work):
 
 # ---- story, script, pictures -------------------------------------------------------------------------------------------
 def pick(recent):
-    sources.MAX_AGE_H = 24  # people stories trend for a day, not six hours
-    cands = sources.trending()[:60]
+    saved = sources.FEEDS, sources.MAX_AGE_H, sources.REQUIRE_DATE
+    sources.FEEDS, sources.MAX_AGE_H, sources.REQUIRE_DATE = VIRAL_FEEDS, 24, False  # people stories trend for a day
+    try:
+        cands = [c for c in sources.trending() if len(c['outlets']) >= 2 or (c['fresh_h'] is not None and c['fresh_h'] <= 24)][:60]
+    finally:
+        sources.FEEDS, sources.MAX_AGE_H, sources.REQUIRE_DATE = saved
     lines = '\n'.join('{}. ({} outlets) {}'.format(i, len(c['outlets']), c['title']) for i, c in enumerate(cands))
     out = ai.gemini(PICK.format(cands=lines, recent='\n'.join('- ' + r for r in recent[-40:]) or '- none'), temperature=0.4, chain='bulk')
     picks = []
@@ -226,8 +241,9 @@ def script(outlets):
             problems.append('%d spoken words, need %d-%d' % (words, lo, hi))
         if len([h for h in s.get('headline') or [] if isinstance(h, str) and h.strip()]) != 4:
             problems.append('headline must be exactly 4 lines')
-        if not s.get('title') or not s.get('caption'):
-            problems.append('missing title or caption')
+        tags = [t for t in s.get('hashtags') or [] if isinstance(t, str) and t.strip()]
+        if not s.get('title') or len(tags) < 4:
+            problems.append('missing the Hindi title or fewer than 4 English hashtags')
         if not problems:
             s['teaser'], s['story'] = teaser, story
             return s
@@ -293,8 +309,18 @@ def build(p, work):
     stage('script: %d teaser + %d story sentences' % (len(s['teaser']), len(s['story'])))
     found = moments.find(p['title'], names, p['query'], os.path.join(work, 'm'), want=48)
     stage('pictures found: %d' % len(found))
-    if len(found) < 12:
-        return {'skip': 'only %d usable pictures' % len(found)}
+    # every picture is downloaded and checked BEFORE the voice is made (live test 10-31: a 3.7-min voice was made, then
+    # the pictures ran out at shot 3). Clips are cut 8.4 s long so they fit any slot; photos as they are.
+    pool = []
+    for k, m in enumerate(found[:30]):
+        f = _fetch(m, 8.0, os.path.join(work, 'src%03d' % k))
+        if f:
+            pool.append((m, f))
+    bad = set(_check([f for _, f in pool], p['title'], names, work)) if pool else set()
+    pool = [x for k, x in enumerate(pool) if k not in bad]
+    stage('usable pictures: %d (%d failed the picture check)' % (len(pool), len(bad)))
+    if len(pool) < 8:
+        return {'skip': 'only %d usable pictures' % len(pool)}
     sents = [t['say'] for t in s['teaser']] + s['story']
     wav, cuts = voice(sents, work)
     total = cuts[-1]
@@ -308,37 +334,25 @@ def build(p, work):
             slots += [(i, a, (a + b) / 2), (i, (a + b) / 2, b)]
         else:
             slots.append((i, a, b))
-    descs = '\n'.join('%d: %s %s' % (k, m['kind'], m.get('desc', '')) for k, m in enumerate(found))
+    descs = '\n'.join('%d: %s %s' % (k, m['kind'], m.get('desc', '')) for k, (m, _) in enumerate(pool))
     try:
         pk = ai.gemini(MATCH.format(story=p['title'], sents='\n'.join('%d: %s' % (k, sents[i]) for k, (i, _, _) in enumerate(slots)),
                                     pics=descs, n=len(slots)), temperature=0.2).get('pick') or []
     except ai.AIUnavailable:
         pk = []
-    order = [x if isinstance(x, int) and 0 <= x < len(found) else k % len(found) for k, x in enumerate(pk[:len(slots)])]
-    order += [k % len(found) for k in range(len(order), len(slots))]
-    # fetch (reusing a fetched picture when the same one is picked again), spares replace refusals
-    got, files, used = {}, [], set(order)
-    spare = [k for k in range(len(found)) if k not in used]
-    for k, ((i, a, b), m) in enumerate(zip(slots, order)):
-        f = got.get(m)
-        while not f:
-            f = _fetch(found[m], max(b - a, 4.0), os.path.join(work, 'src%03d' % k))
-            if f:
-                got[m] = f
-            elif spare:
-                m = spare.pop(0)
-            else:
-                return {'skip': 'ran out of usable pictures at shot %d of %d' % (k + 1, len(slots))}
+    order = [x if isinstance(x, int) and 0 <= x < len(pool) else k % len(pool) for k, x in enumerate(pk[:len(slots)])]
+    order += [k % len(pool) for k in range(len(order), len(slots))]
+    uses, files, starts = {}, [], []
+    for (i, a, b), x in zip(slots, order):
+        if uses.get(x, 0) >= MAX_USE:  # picked too often: the least-used picture instead
+            x = min(range(len(pool)), key=lambda k: uses.get(k, 0))
+        f = pool[x][1]
+        clip = _dur(f) if f.endswith('.mp4') else 0.0
+        # a clip shown again starts further in, so the same seconds are never on screen twice
+        starts.append(round((uses.get(x, 0) * 3.0) % max(0.1, clip - (b - a)), 2) if clip > (b - a) else 0.0)
+        uses[x] = uses.get(x, 0) + 1
         files.append(f)
-    stage('fetched %d shots (%d different pictures)' % (len(files), len(set(files))))
-    for k in _check(files, p['title'], names, work):
-        while spare:
-            m = spare.pop(0)
-            f = _fetch(found[m], max(slots[k][2] - slots[k][1], 4.0), os.path.join(work, 'r%03d' % k))
-            if f:
-                files[k] = f
-                log('  replaced shot %d after the picture check' % k)
-                break
+    stage('%d shots from %d different pictures' % (len(files), len(set(files))))
     # hook cards: the story's people (photos first), one per teaser line
     people = [f for f in dict.fromkeys(files) if f.endswith('.jpg')] or list(dict.fromkeys(files))
     cards = []
@@ -356,8 +370,8 @@ def build(p, work):
             if after is not None:
                 burst = {'src': 'burst.mp4', 'start': 0.3, 'dur': 2.5, 'after_shot': nt + after, 'at': slots[after][2]}
     shots = [{'card': j, 'dur': cuts[j + 1] - cuts[j]} for j in range(nt)]
-    for (i, a, b), f in zip(slots, files):
-        shots.append({'src': os.path.basename(f), 'start': 0.0, 'dur': b - a, 'still': f.endswith('.jpg')})
+    for (i, a, b), f, st in zip(slots, files, starts):
+        shots.append({'src': os.path.basename(f), 'start': st, 'dur': b - a, 'still': f.endswith('.jpg')})
     spec = {'type': 'viral', 'headline': [h.strip() for h in s['headline']][:4], 'cards': cards, 'shots': shots,
             'burst': burst, 'hits': cuts[:nt], 'total': total}
     job = os.path.join(work, 'job.json')
@@ -376,7 +390,11 @@ def build(p, work):
     if not marks:
         raise RuntimeError('Cloud Run render failed twice')
     stage('rendered on Cloud Run (%s), %.0f s video' % (marks, _dur(video)))
-    return {'video': video, 'title': s['title'].strip(), 'caption': s['caption'].strip(), 'headline': ' '.join(spec['headline']),
+    # the post text exactly like his: Hindi title + English hashtags (user 10-31)
+    tags = ['#' + re.sub(r'[^a-z0-9]', '', t.lower().lstrip('#')) for t in s['hashtags'] if isinstance(t, str)]
+    tags = list(dict.fromkeys([t for t in tags if len(t) > 2] + ['#viralvideo', '#trending']))
+    post = '%s %s' % (s['title'].strip(), ' '.join(tags))
+    return {'video': video, 'title': post, 'caption': post, 'headline': ' '.join(spec['headline']),
             'seconds': round(_dur(video)), 'shots': len(shots)}
 
 
@@ -465,7 +483,7 @@ def publish_due():
     schedule._save('viral_schedule.json', p)  # marked first: a video is never posted twice
     try:
         vid = _upload(os.environ['FB_PAGE_ID'], os.environ['FB_PAGE_TOKEN'], os.path.join(v['dir'], 'video.mp4'), v['title'],
-                      '%s\n\n%s' % (v['title'], v['caption']))
+                      v['caption'])
     except urllib.error.HTTPError as e:  # Facebook refused it: nothing went out, the video stays for the next time
         log('VIRAL FACEBOOK ERROR: HTTP %s %s' % (e.code, e.read().decode('utf-8', 'ignore')[:300]))
         return
