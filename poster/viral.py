@@ -96,6 +96,10 @@ Return JSON: {{"teaser": [{{"say": "..."}}], "story": ["...", "..."], "headline"
 SOURCES:
 {sources}"""
 
+STORY_Q = """Headlines of one Hindi news story: {title}
+Return JSON: {{"query": "<4-8 word ENGLISH search query for this story>", "query_hi": "<4-8 word Hindi search query>",
+"names": ["<the people in it, in English, max 3>"]}}"""
+
 MATCH = """Pick a picture for each spoken sentence of a Hindi news video about: {story}
 SENTENCES:
 {sents}
@@ -668,11 +672,10 @@ def build_story(q):
         return log('no Google News articles for: %s' % q)
     outlets = sorted({r['outlet'] for r in rows})
     cluster = {'title': rows[0]['title'], 'outlets': outlets, 'links': rows, 'fresh_h': min(r['age_h'] or 99 for r in rows)}
-    out = ai.gemini(PICK.format(cands='0. (%d outlets) %s' % (len(outlets), cluster['title']), recent='- none'), temperature=0.2,
-                    chain='bulk')
-    p = next((x for x in out.get('picks') or [] if isinstance(x, dict) and x.get('query')), None)
-    if not p:
-        return log('no search query from the AI for: %s' % q)
+    # its own short prompt: the 4-from-60 PICK prompt came back empty for a single candidate (live 10-31)
+    p = ai.gemini(STORY_Q.format(title=' / '.join(dict.fromkeys(r['title'] for r in rows[:5]))), temperature=0.2)
+    if not (isinstance(p, dict) and isinstance(p.get('query'), str) and p['query'].strip()):
+        return log('no search query from the AI for: %s (got %s)' % (q, str(p)[:200]))
     p['title'], p['cluster'] = cluster['title'], cluster
     if p.get('query_hi'):
         hindi.HI_QUERY[p['query']] = p['query_hi']
