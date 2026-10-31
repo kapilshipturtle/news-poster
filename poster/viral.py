@@ -50,6 +50,8 @@ VIRAL_FEEDS = {  # MEASURED 2026-10-31: these answer with fresh people/oddity st
 MAX_USE = 3               # one picture on screen at most 3 times (he repeats pictures too) - more only when few exist
 ENOUGH = 24               # different pictures worth fetching for a ~3.5-min video (his: many sources, ~6.6 s shots)
 MIN_PICS = 10             # different pictures a video needs
+SOURCE_SHARE, SOURCE_MIN_S = 0.10, 20.0  # COPYRIGHT GATE (user 10-31 "otherwise we will get copyright issue"): one
+MIN_SOURCES = 6                           # source video at most 10% of the film (20 s floor), 6+ sources, else no post
 STORY_PIECES, STORY_USES = 3, 2  # the article's own video is a SUPPLEMENT (user 10-31: one video playing through the
                                  # whole film is not what he does): 3 pieces, each on screen at most twice
 MAX_SHOT = 7.5            # his median shot is 6.6 s; a longer sentence gets two pictures
@@ -487,12 +489,18 @@ def story_clips(outlets, work):
             subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-ss', '%.2f' % t, '-i', src, '-t', '8.4', '-c', 'copy',
                             '-avoid_negative_ts', 'make_zero', piece])
             if os.path.exists(piece) and _dur(piece) > 1.0:
-                out.append(({'kind': 'clip', 'desc': 'the viral video itself (%s)' % urllib.parse.urlparse(u).netloc}, piece))
+                out.append(({'kind': 'clip', 'src': u, 'desc': 'the viral video itself (%s)' % urllib.parse.urlparse(u).netloc}, piece))
             t += step
         os.remove(src)
         if len(out) >= STORY_PIECES:
             break
     return out[:STORY_PIECES]
+
+
+def _source(m, f):
+    """The video a picture comes from (the copyright gate counts on-screen seconds per source): a YouTube video id, the
+    article's embedded post, or the photo itself."""
+    return 'yt:' + m['vid'] if m.get('vid') else m.get('src') or 'photo:' + os.path.basename(f)
 
 
 def _frame(path, out, at=0.5):
@@ -591,16 +599,29 @@ def build(p, work):
     uses, files, starts = {}, [], []
     cap = max(MAX_USE, -(-len(slots) // len(pool)))  # few pictures (a small viral story): each shows more often
     story_files = {f for _, f in story}
+    src_of = [_source(m, f) for m, f in pool]
+    limit = max(SOURCE_MIN_S, SOURCE_SHARE * total)
+    on_screen = {}  # seconds per source video
+    def over(k, d):
+        return (uses.get(k, 0) >= (STORY_USES if pool[k][1] in story_files else cap) or
+                on_screen.get(src_of[k], 0) + d > limit)
     for (i, a, b), x in zip(slots, order):
-        if uses.get(x, 0) >= (STORY_USES if pool[x][1] in story_files else cap):  # too often: the least-used instead
-            x = min(range(len(pool)), key=lambda k: (pool[k][1] in story_files and uses.get(k, 0) >= STORY_USES, uses.get(k, 0)))
+        if over(x, b - a):  # too often, or its source video would pass the copyright cap: the least-used allowed one
+            ok = [k for k in range(len(pool)) if not over(k, b - a)]
+            if not ok:
+                return {'skip': 'copyright gate: not enough different sources to keep each under %.0f s' % limit}
+            x = min(ok, key=lambda k: (on_screen.get(src_of[k], 0), uses.get(k, 0)))
+        on_screen[src_of[x]] = on_screen.get(src_of[x], 0) + (b - a)
         f = pool[x][1]
         clip = _dur(f) if f.endswith('.mp4') else 0.0
         # a clip shown again starts further in, so the same seconds are never on screen twice
         starts.append(round((uses.get(x, 0) * 3.0) % max(0.1, clip - (b - a)), 2) if clip > (b - a) else 0.0)
         uses[x] = uses.get(x, 0) + 1
         files.append(f)
-    stage('%d shots from %d different pictures' % (len(files), len(set(files))))
+    stage('%d shots from %d different pictures, %d sources, the most from one source %.0f s (limit %.0f s)' % (
+        len(files), len(set(files)), len(on_screen), max(on_screen.values()), limit))
+    if len(on_screen) < MIN_SOURCES:
+        return {'skip': 'copyright gate: only %d different sources (need %d)' % (len(on_screen), MIN_SOURCES)}
     # hook cards: the story's people - its own video first (the real person), else photos, one per teaser line
     people = ([f for _, f in story] or [f for f in dict.fromkeys(files) if f.endswith('.jpg')] or list(dict.fromkeys(files)))
     cards = []
