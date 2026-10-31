@@ -28,9 +28,9 @@ from . import ai, cloud, hindi, moments, schedule
 IST = ZoneInfo('Asia/Kolkata')
 QUEUE = os.path.join(schedule.STATE, 'viral_queue')
 PER_DAY = 5                # user 2026-10-31: 5 a day, every one of them published
-WINDOWS = [(7 * 60, 8 * 60 + 30), (10 * 60, 11 * 60 + 30), (13 * 60, 14 * 60 + 30), (16 * 60 + 30, 18 * 60),
-           (20 * 60, 21 * 60 + 30)]  # IST, one video in each
-POST_HOURS = (6, 23)       # user rule 10-24: post only 06:00-23:00 local; a missed slot is caught up before 23:00
+WINDOWS = [(5 * 60, 6 * 60), (9 * 60 + 30, 10 * 60 + 30), (14 * 60, 15 * 60), (18 * 60 + 30, 19 * 60 + 30),
+           (22 * 60 + 30, 23 * 60 + 30)]  # IST, one video in each (user 10-31: from 5 am to around midnight)
+POST_HOURS = (5, 24)       # a missed slot is caught up before midnight
 BUFFER = 2                 # videos kept built ahead, at any hour, so no slot waits on a ~20-min build
 VOICE_DIR = os.environ.get('VIRAL_VOICE_DIR', '/home/poster/voices/shiva-hindi')
 SFX = os.environ.get('VIRAL_SFX', '/home/poster/sfx/viral_hit.wav')  # Meta SC whoosh_2 + impact_1 -6 dB (measured match)
