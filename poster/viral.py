@@ -322,11 +322,10 @@ def candidates():
         w = _words(it['title'])
         if len(w) < 3:
             continue
-        for c in clusters:
-            shared = len(w & c['words'])
+        for c in clusters:  # matched against the story's FIRST headline: a growing word set snowballed unrelated
+            shared = len(w & c['words'])  # headlines into one '70-outlet' story (live 10-31)
             if shared >= 3 or shared / max(1, len(w | c['words'])) >= 0.3:
                 c['items'].append(it)
-                c['words'] |= w
                 break
         else:
             clusters.append({'words': set(w), 'items': [it]})
