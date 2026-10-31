@@ -573,13 +573,16 @@ def _seen_before(img):
     return False
 
 
+SHOT_CHANGE_CHECK = True  # the viral videos turn it off: their clips are the people's own vlogs, which cut often
+
+
 def text_heavy(path, max_words=6):
     """3 frames per clip (start, middle, end), OCR in English + Hindi + Punjabi, and a clip with a shot change inside is
     refused (a fast-cut news package drifts to other pictures: one went from border troops to Xi Jinping)."""
     frames = [path]
     if path.endswith('.mp4'):
-        cuts = subprocess.run(['ffmpeg', '-hide_banner', '-i', path, '-vf', "select='gt(scene,0.35)',showinfo", '-f', 'null', '-'],
-                              capture_output=True, text=True).stderr.count('pts_time:')
+        cuts = SHOT_CHANGE_CHECK and subprocess.run(['ffmpeg', '-hide_banner', '-i', path, '-vf', "select='gt(scene,0.35)',showinfo",
+                                                     '-f', 'null', '-'], capture_output=True, text=True).stderr.count('pts_time:')
         if cuts:
             print('  clip has {} shot change(s) inside, refused'.format(cuts), flush=True)
             return True

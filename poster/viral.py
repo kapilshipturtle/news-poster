@@ -56,6 +56,7 @@ STORY_PIECES, STORY_USES = 3, 2  # the article's own video is a SUPPLEMENT (user
                                  # whole film is not what he does): 3 pieces, each on screen at most twice
 MAX_SHOT = 7.5            # his median shot is 6.6 s; a longer sentence gets two pictures
 moments.PREFER_VERTICAL = False  # the media window is 16:9, not a phone screen
+hindi.SHOT_CHANGE_CHECK = False  # live 10-31: it refused 10 of the people's own vlog moments (garland, airport, plane)
 
 PICK = """You run an Indian Hindi Facebook page whose long videos go viral: stories about specific PEOPLE that everyone is
 talking about on social media - an influencer feud or emotional breakdown, a poor person's rise ("झुग्गी से सुपरमॉडल"),
