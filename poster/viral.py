@@ -626,7 +626,9 @@ def plan():
 def _upload(page, token, video, title, description):
     import uuid
     b = uuid.uuid4().hex
-    fields = {'title': title[:250], 'description': description, 'published': 'true', 'access_token': token}
+    # no 'title': live 10-31 Facebook refused the Hindi title + hashtags (~400 UTF-8 bytes) as "The file name is too
+    # long" (code 100 / 1363143); the post text is the description, as on his posts
+    fields = {'description': description, 'published': 'true', 'access_token': token}
     head = b''.join(('--%s\r\nContent-Disposition: form-data; name="%s"\r\n\r\n%s\r\n' % (b, k, v)).encode() for k, v in fields.items())
     head += ('--%s\r\nContent-Disposition: form-data; name="source"; filename="video.mp4"\r\nContent-Type: video/mp4\r\n\r\n' % b).encode()
     body = head + open(video, 'rb').read() + ('\r\n--%s--\r\n' % b).encode()
