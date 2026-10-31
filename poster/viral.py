@@ -361,8 +361,10 @@ def build(p, work):
     t0 = time.time()
     stage = lambda s: log('  [%4.0f s] %s' % (time.time() - t0, s))
     outlets, _ = sources.articles(p['cluster'], p['query'])
-    if len(outlets) < 2:
-        return {'skip': 'only %d outlets' % len(outlets)}
+    # viral human-interest stories are mostly carried by one of the 4 mainstream outlets first; one readable article with
+    # real detail is enough (the video ends with his "based on social media and media reports" line)
+    if not outlets or (len(outlets) < 2 and len(outlets[0].get('text', '')) < 800):
+        return {'skip': 'no readable article with enough detail (%d outlets)' % len(outlets)}
     s = script(outlets)
     if s.get('skip'):
         return s
