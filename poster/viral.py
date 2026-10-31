@@ -52,8 +52,8 @@ ENOUGH = 24               # different pictures worth fetching for a ~3.5-min vid
 MIN_PICS = 10             # different pictures a video needs
 SOURCE_SHARE, SOURCE_MIN_S = 0.10, 20.0  # COPYRIGHT GATE (user 10-31 "otherwise we will get copyright issue"): one
 MIN_SOURCES = 6                           # source video at most 10% of the film (20 s floor), 6+ sources, else no post
-STORY_PIECES, STORY_USES = 3, 2  # the article's own video is a SUPPLEMENT (user 10-31: one video playing through the
-                                 # whole film is not what he does): 3 pieces, each on screen at most twice
+POSTS, EMBED_OUTLETS = 8, 10  # the story's own posts (embedded by up to 10 outlets): up to 8, 2 moments each - many
+STORY_USES = 2                 # sources, never one video through the film (user 10-31); each moment on screen at most twice
 MAX_SHOT = 7.5            # his median shot is 6.6 s; a longer sentence gets two pictures
 moments.PREFER_VERTICAL = False  # the media window is 16:9, not a phone screen
 hindi.SHOT_CHANGE_CHECK = False  # live 10-31: it refused 10 of the people's own vlog moments (garland, airport, plane)
@@ -118,6 +118,11 @@ Mark a picture BAD if: it is a TV graphic, headline banner, breaking-news frame,
 with long text; a split screen or collage; a watermark across it; blank, black or blurry; or it clearly shows people or
 places that have nothing to do with this story. A small channel logo in a corner is fine.
 Return JSON: {{"bad": [<numbers>]}}"""
+POST_CHECK = """These numbered pictures are moments from social-media posts that news articles about this story embedded:
+{story}. People in the story: {names}. Captions or text on them are FINE. Mark BAD only: blank, black or blurry; only a
+logo or title card; or clearly nothing to do with this story. Describe every other picture in 4-8 English words
+(who / what it shows).
+Return JSON: {{"bad": [<numbers>], "desc": {{"<number>": "<words>", ...}}}}"""
 REF_RULE = """
 Picture R (last) is from the story's own video and shows the REAL people. Mark BAD any numbered picture that shows a
 DIFFERENT person presented as them (someone else with the same name). Picture R itself is never in "bad"."""
@@ -394,18 +399,19 @@ def _article(url):
 
 
 def articles(cluster):
-    out, seen = [], set()
+    """(articles for the script: 3 readable ones, embedded posts: from up to 10 outlets). MEASURED 10-31: 15 outlets on
+    the Shivani story embedded 11 different posts (5 X, 2 Instagram, 3 YouTube incl. Marvin's own accusation video)."""
+    out, seen, embeds = [], set(), []
     for it in cluster['links']:
-        if it['outlet'] in seen:
+        if it['outlet'] in seen or len(seen) >= EMBED_OUTLETS:
             continue
+        seen.add(it['outlet'])
         url = _resolve(it['url'])
-        text, embeds = _article(url) if url else ('', [])
-        if text:
-            seen.add(it['outlet'])
-            out.append({'outlet': it['outlet'], 'url': url, 'title': it['title'], 'text': text, 'embeds': embeds})
-            if len(out) >= 3:
-                break
-    return out
+        text, emb = _article(url) if url else ('', [])
+        embeds += emb
+        if text and len(out) < 3:
+            out.append({'outlet': it['outlet'], 'url': url, 'title': it['title'], 'text': text})
+    return out, list(dict.fromkeys(embeds))
 
 
 def pick(recent):
@@ -466,36 +472,33 @@ def _fetch(m, dur, out):
         return None
 
 
-def story_clips(outlets, work):
-    """The story's own viral video from the articles' embeds (X / Instagram / YouTube: the server fetches all three
-    without a login, tested 10-31), in 8.4 s pieces 7+ s apart - what his videos show most. Live test 5 (10-31): three
-    small viral stories found only 0-6 pictures on YouTube + Bing, so all three were skipped."""
+def story_clips(embeds, work):
+    """The posts the story is about, as the articles embed them (X / Instagram / YouTube; X and Instagram fetch without
+    a login, tested 10-31): up to POSTS posts, 2 moments each, every post its own source for the copyright gate. A
+    YouTube block (10-31: 'Sign in to confirm you're not a bot' after a day of tests) no longer stops a video."""
     out = []
-    for k, u in enumerate(list(dict.fromkeys(e for o in outlets for e in o.get('embeds', [])))[:3]):
-        src = os.path.join(work, 'story%d.mp4' % k)
+    for k, u in enumerate(sorted(embeds, key=lambda u: 'youtube' in u)[:POSTS + 2]):  # X / Instagram first
+        if len({m['src'] for m, _ in out}) >= POSTS:
+            break
+        src = os.path.join(work, 'post%d.mp4' % k)
         try:
             r = moments._yt(['-f', 'bv*+ba/b', '-S', 'res:720', '--merge-output-format', 'mp4', '--max-filesize', '150M',
-                             '--download-sections', '*0-120', '--match-filter', 'duration<=?900 & !is_live', '-o', src, u], timeout=240)
+                             '--download-sections', '*0-120', '--match-filter', 'duration<=?900 & !is_live', '-o', src, u], timeout=180)
         except subprocess.TimeoutExpired:
             r = None
         if not os.path.exists(src):
-            log('  story video not fetched: %s %s' % (u, ((r and r.stderr) or '').strip()[-120:]))
+            log('  post not fetched: %s %s' % (u, ((r and r.stderr) or '').strip()[-100:]))
             continue
         d = _dur(src)
-        step = max(7.0, (d - 3) / STORY_PIECES)
-        t = 0.0
-        while t < max(1.0, d - 3):
-            piece = os.path.join(work, 'story%d_%02d.mp4' % (k, int(t)))
+        for j, t in enumerate((0.0, max(0.0, d / 2 - 2)) if d > 12 else (0.0,)):
+            piece = os.path.join(work, 'post%d_%d.mp4' % (k, j))
             # stream copy (starts on the keyframe before t): live test 6 re-encoded 8 pieces of a 5-min embed in 7.5 min
             subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-ss', '%.2f' % t, '-i', src, '-t', '8.4', '-c', 'copy',
                             '-avoid_negative_ts', 'make_zero', piece])
             if os.path.exists(piece) and _dur(piece) > 1.0:
-                out.append(({'kind': 'clip', 'src': u, 'desc': 'the viral video itself (%s)' % urllib.parse.urlparse(u).netloc}, piece))
-            t += step
+                out.append(({'kind': 'clip', 'src': u, 'desc': 'a post about the story'}, piece))
         os.remove(src)
-        if len(out) >= STORY_PIECES:
-            break
-    return out[:STORY_PIECES]
+    return out
 
 
 def _source(m, f):
@@ -512,9 +515,8 @@ def _frame(path, out, at=0.5):
     return out
 
 
-def _check(files, story, names, work, ref=None):
-    """One vision look at all story pictures (16:9 contact sheet); returns indexes to replace. With `ref` (a frame of the
-    story's own video) first, labelled R: a picture showing a DIFFERENT person under the same name is refused."""
+def _sheet(files, work, ref=None):
+    """All pictures on one 16:9 contact sheet, numbered (ref last, labelled R)."""
     from PIL import Image, ImageDraw
     thumbs = [_frame(f, os.path.join(work, 'chk%03d.jpg' % i)) for i, f in enumerate(files)] + ([ref] if ref else [])
     w, h, cols = 320, 178, 6
@@ -526,18 +528,37 @@ def _check(files, story, names, work, ref=None):
         d.text((x + 4, y + 4), 'R' if i == len(files) else str(i), fill='black')
     p = os.path.join(work, 'check.jpg')
     sheet.save(p, quality=85)
+    return p
+
+
+def _check(files, story, names, work, ref=None):
+    """One vision look at all story pictures; returns indexes to replace. With `ref` (a frame of the story's own post)
+    last, labelled R: a picture showing a DIFFERENT person under the same name is refused."""
     try:
-        out = ai.gemini_vision(CHECK.format(story=story, names=', '.join(names)) + (REF_RULE if ref else ''), [p])
+        out = ai.gemini_vision(CHECK.format(story=story, names=', '.join(names)) + (REF_RULE if ref else ''), [_sheet(files, work, ref)])
     except ai.AIUnavailable:
         return []
     return [b for b in (out.get('bad') or []) if isinstance(b, int) and 0 <= b < len(files)]
+
+
+def _check_posts(posts, story, names, work):
+    """The embedded posts: captions are part of a post, so only blank / unrelated ones go; each kept one gets a short
+    description, so the sentence matcher can place it (it had only 'the viral video itself')."""
+    if not posts:
+        return []
+    try:
+        out = ai.gemini_vision(POST_CHECK.format(story=story, names=', '.join(names)), [_sheet([f for _, f in posts], work)])
+    except ai.AIUnavailable:
+        return posts
+    bad, desc = set(out.get('bad') or []), out.get('desc') or {}
+    return [(dict(m, desc=str(desc.get(str(i)) or m['desc'])[:80]), f) for i, (m, f) in enumerate(posts) if i not in bad]
 
 
 # ---- one video ---------------------------------------------------------------------------------------------------------
 def build(p, work):
     t0 = time.time()
     stage = lambda s: log('  [%4.0f s] %s' % (time.time() - t0, s))
-    outlets = articles(p['cluster'])
+    outlets, embeds = articles(p['cluster'])
     # viral human-interest stories are mostly carried by one of the 4 mainstream outlets first; one real article is
     # enough (the video ends with his "based on social media and media reports" line)
     if not outlets:
@@ -551,11 +572,15 @@ def build(p, work):
     stage('pictures found: %d' % len(found))
     # every picture is downloaded and checked BEFORE the voice is made (live test 10-31: a 3.7-min voice was made, then
     # the pictures ran out at shot 3). Clips are cut 8.4 s long so they fit any slot; photos as they are.
-    story = story_clips(outlets, work)
-    stage('story video pieces: %d' % len(story))
+    story = _check_posts(story_clips(embeds, work), p['title'], names, work)
+    stage('story post moments: %d from %d posts (%d embedded)' % (len(story), len({m['src'] for m, _ in story}), len(embeds)))
     # fetched in batches only until there are enough (live test 6: each YouTube picture costs ~1.5 min of the free
     # server's CPU, and fetching all 30 took 13+ min although ~12 were needed)
-    ref = _frame(story[0][1], os.path.join(work, 'ref.jpg'), at=1.0) if story else None  # the real person (test 7: a namesake)
+    # the real person: a post moment whose description NAMES a story person (test 7: a namesake actor; a random X post
+    # may show an anchor, so it is never the reference unless named)
+    who = {w.lower() for n in names for w in re.findall(r'[A-Za-z]{3,}', n)}
+    named = [f for m, f in story if who & set(re.findall(r'[a-z]{3,}', m['desc'].lower()))]
+    ref = _frame(named[0], os.path.join(work, 'ref.jpg'), at=1.0) if named else None
     # clips first, the people's own channels first (moments.find sorts them so), photos only to fill: user 10-31 "in
     # SAMPLE-Marvin-Shivani-1min b-roll was perfect" - every shot there was a moment from the two people's own videos
     found = [m for m in found if m['kind'] == 'clip'] + [m for m in found if m['kind'] != 'clip']
@@ -624,7 +649,7 @@ def build(p, work):
     if len(on_screen) < MIN_SOURCES:
         return {'skip': 'copyright gate: only %d different sources (need %d)' % (len(on_screen), MIN_SOURCES)}
     # hook cards: the story's people - its own video first (the real person), else photos, one per teaser line
-    people = ([f for _, f in story] or [f for f in dict.fromkeys(files) if f.endswith('.jpg')] or list(dict.fromkeys(files)))
+    people = named or list(dict.fromkeys(files))  # a post naming them, else the film's own first pictures
     cards = []
     for j, t in enumerate(s['teaser']):
         img = os.path.join(work, 'card%d.jpg' % j)
