@@ -43,7 +43,21 @@ def canvas(lines, out):
     im.save(out)
 
 
+def _wrap(d, words, size, width):
+    f, lines, cur = font(size), [], ''
+    for w in words:
+        t = (cur + ' ' + w).strip()
+        if cur and d.textlength(t, font=f) > width:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = t
+    return lines + ([cur] if cur else [])
+
+
 def card(img, lines, out):
+    """His hook card: the picture left, the SPOKEN teaser line itself right, in big white type filling the panel
+    (measured: 5 lines, e.g. "Youtuber शिवानी कुमारी पर मार्विन आची ने लगाया ऐसा आरोप कि फूट फूट कर रोने लगी शिवानी")."""
     im = Image.open(img).convert('RGB')
     s = max(MH / im.height, 720 / im.width) * 1.02
     im = im.resize((int(im.width * s) + 1, int(im.height * s) + 1))
@@ -51,10 +65,14 @@ def card(img, lines, out):
     c = Image.new('RGB', (W, MH), (22, 22, 22))
     c.paste(im.crop((x, y, x + 720, y + MH)), (0, 0))
     d = ImageDraw.Draw(c)
-    f = font(min(fit(d, t, 640, 130) for t in lines))
-    step = int(f.size * 1.32)
-    top = (MH - len(lines) * step) // 2
-    for k, t in enumerate(lines):
+    words = ' '.join(lines).split()
+    size = 104
+    while size > 56 and len(_wrap(d, words, size, 650)) > 6:  # as large as fits in 6 lines
+        size -= 4
+    rows, f = _wrap(d, words, size, 650), font(size)
+    step = int(size * 1.3)
+    top = (MH - len(rows) * step) // 2
+    for k, t in enumerate(rows):
         d.text((720 + (720 - d.textlength(t, font=f)) / 2, top + k * step), t, font=f, fill=(255, 255, 255))
     c.save(out)
     return out

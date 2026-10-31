@@ -63,21 +63,20 @@ STRUCTURE (this is what makes people watch to the end):
 1. "teaser": 4 or 5 punchy spoken lines (8-16 words each) BEFORE the story. Each line is a new claim. Use the patterns:
    withheld detail ("... ने लगाया ऐसा आरोप कि ..." - never say WHAT yet), contradiction ("कभी ... आज ...",
    "न ... न ...", "जिसे ... उसी ने ..."), emotion ("फूट-फूट कर रोने लगी"). The LAST teaser line asks the big question and
-   promises the answer: e.g. "आखिर ... ? सब देखिए।" Each teaser line also has "card": the same idea in 2-4 very short
-   on-screen lines (max 14 characters each).
+   promises the answer: e.g. "आखिर ... ? सब देखिए।" (Each teaser line is also shown big on screen, word for word.)
 2. "story": 30-45 spoken sentences (each max 20 words). Starts with "दरअसल,". Tell it in time order with real details
    and the emotions. Around the middle, re-open the question ("अब ये जानना बहुत ज़रूरी है कि ..."). Keep the answer to the
    teaser question for the LAST 20% of the story. End with: "आपको क्या लगता है? कमेंट कर प्रतिक्रिया ज़रूर दीजिएगा।" and
    "दी गई जानकारी सोशल मीडिया और मीडिया रिपोर्ट्स पर आधारित है।"
 Total spoken words (teaser + story): {lo} to {hi}. Simple spoken Hindi like a TV anchor; numbers as Hindi words.
-"headline": ONE sentence split into 4 lines of max 16 characters (it stays on screen the whole video): lines 1-2 are the
+"headline": ONE sentence split into 4 SHORT lines of 2-3 words each, no comma at a line end (it stays on screen the whole video): lines 1-2 are the
 setup, lines 3-4 the payoff, line 3 ends with ".." (e.g. "जिसे घर में रखा" / "उसी मेहमान ने" / "लगाया आरोप.." / "रो पड़ीं शिवानी").
 "title": the Facebook post title in HINDI, max 110 characters, hook + contradiction like the teaser, no hashtags
 (e.g. "इज्जत के चक्कर में मार्विन आची ने शिवानी कुमारी पर लगाया आरोप, फूट फूट कर रोने लगी शिवानी!").
 "hashtags": 5-8 ENGLISH hashtags, lowercase, no spaces: each person's name (e.g. "#shivanikumari", "#marvinachi"),
 the story's key words, and always "#viralvideo" and "#trending".
 
-Return JSON: {{"teaser": [{{"say": "...", "card": ["..", ".."]}}], "story": ["...", "..."], "headline": ["..", "..", "..", ".."],
+Return JSON: {{"teaser": [{{"say": "..."}}], "story": ["...", "..."], "headline": ["..", "..", "..", ".."],
 "title": "...", "hashtags": ["#..", "#.."], "names": ["<people, English>"]}}
 
 SOURCES:
@@ -331,7 +330,7 @@ def script(outlets):
         if s.get('skip'):
             return s
         problems = []
-        teaser = [t for t in s.get('teaser') or [] if isinstance(t, dict) and t.get('say') and t.get('card')]
+        teaser = [t for t in s.get('teaser') or [] if isinstance(t, dict) and isinstance(t.get('say'), str) and t['say'].strip()]
         story = [x for x in s.get('story') or [] if isinstance(x, str) and x.strip()]
         words = sum(len(t['say'].split()) for t in teaser) + sum(len(x.split()) for x in story)
         if not 4 <= len(teaser) <= 5:
@@ -460,7 +459,7 @@ def build(p, work):
     for j, t in enumerate(s['teaser']):
         img = os.path.join(work, 'card%d.jpg' % j)
         _frame(people[j % len(people)], img, at=1.0)
-        cards.append({'img': os.path.basename(img), 'lines': [x for x in t['card'] if isinstance(x, str)][:4] or [t['say'][:14]]})
+        cards.append({'img': os.path.basename(img), 'lines': [t['say'].strip()]})  # his card = the spoken line itself
     # one burst of a clip's own sound (his first video: ~3 s at 0:56), after the 3rd story sentence, from a speaking clip
     burst = None
     speak = [k for k, m in enumerate(found) if m['kind'] == 'clip' and hindi.SPEAKING.search(m.get('desc', ''))]
@@ -473,7 +472,7 @@ def build(p, work):
     shots = [{'card': j, 'dur': cuts[j + 1] - cuts[j]} for j in range(nt)]
     for (i, a, b), f, st in zip(slots, files, starts):
         shots.append({'src': os.path.basename(f), 'start': st, 'dur': b - a, 'still': f.endswith('.jpg')})
-    spec = {'type': 'viral', 'headline': [h.strip() for h in s['headline']][:4], 'cards': cards, 'shots': shots,
+    spec = {'type': 'viral', 'headline': [h.strip().rstrip(',').strip() for h in s['headline']][:4], 'cards': cards, 'shots': shots,
             'burst': burst, 'hits': cuts[:nt], 'total': total}
     job = os.path.join(work, 'job.json')
     json.dump(spec, open(job, 'w'), ensure_ascii=False)
