@@ -52,7 +52,7 @@ ENOUGH = 24               # different pictures worth fetching for a ~3.5-min vid
 MIN_PICS = 10             # different pictures a video needs
 SOURCE_SHARE, SOURCE_MIN_S = 0.10, 20.0  # COPYRIGHT GATE (user 10-31 "otherwise we will get copyright issue"): one
 MIN_SOURCES = 6                           # source video at most 10% of the film (20 s floor), 6+ sources, else no post
-POSTS, EMBED_OUTLETS = 8, 10  # the story's own posts (embedded by up to 10 outlets): up to 8, 2 moments each - many
+POSTS, EMBED_OUTLETS = 10, 14  # the story's own posts (embedded by up to 10 outlets): up to 8, 2 moments each - many
 STORY_USES = 2                 # sources, never one video through the film (user 10-31); each moment on screen at most twice
 MAX_SHOT = 7.5            # his median shot is 6.6 s; a longer sentence gets two pictures
 moments.PREFER_VERTICAL = False  # the media window is 16:9, not a phone screen
@@ -381,7 +381,7 @@ def _article(url):
         h = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                                    'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36'}), timeout=20).read().decode('utf-8', 'ignore')
     except (urllib.error.URLError, OSError, ValueError):
-        return '', []
+        return '', [], ''
     body = ''
     for blk in re.findall(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>', h, re.S):
         try:
@@ -395,23 +395,28 @@ def _article(url):
         paras = [html.unescape(re.sub(r'<[^>]+>', '', p_)).strip() for p_ in re.findall(r'<p[^>]*>(.*?)</p>', h, re.S)]
         body = ' '.join(p_ for p_ in paras if len(p_) > 60)
     body = ' '.join(body.split())[:4000]
-    return (body if sum(1 for ch in body if '\u0900' <= ch <= '\u097f') >= 600 else ''), _embeds(h)
+    img = (re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', h) or
+           re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', h))
+    return (body if sum(1 for ch in body if '\u0900' <= ch <= '\u097f') >= 600 else ''), _embeds(h), (img.group(1) if img else '')
 
 
 def articles(cluster):
-    """(articles for the script: 3 readable ones, embedded posts: from up to 10 outlets). MEASURED 10-31: 15 outlets on
-    the Shivani story embedded 11 different posts (5 X, 2 Instagram, 3 YouTube incl. Marvin's own accusation video)."""
-    out, seen, embeds = [], set(), []
+    """(articles for the script: 3 readable ones, embedded posts, lead photos: from up to EMBED_OUTLETS outlets).
+    MEASURED 10-31: 15 outlets on the Shivani story embedded 11 different posts (5 X, 2 Instagram, 3 YouTube incl.
+    Marvin's own accusation video); each outlet's lead photo is one more source for the copyright gate."""
+    out, seen, embeds, photos = [], set(), [], []
     for it in cluster['links']:
         if it['outlet'] in seen or len(seen) >= EMBED_OUTLETS:
             continue
         seen.add(it['outlet'])
         url = _resolve(it['url'])
-        text, emb = _article(url) if url else ('', [])
+        text, emb, img = _article(url) if url else ('', [], '')
         embeds += emb
+        if img.startswith('http'):
+            photos.append(img)
         if text and len(out) < 3:
             out.append({'outlet': it['outlet'], 'url': url, 'title': it['title'], 'text': text})
-    return out, list(dict.fromkeys(embeds))
+    return out, list(dict.fromkeys(embeds)), list(dict.fromkeys(photos))
 
 
 def pick(recent):
@@ -564,7 +569,7 @@ def _check_posts(posts, story, names, work):
 def build(p, work):
     t0 = time.time()
     stage = lambda s: log('  [%4.0f s] %s' % (time.time() - t0, s))
-    outlets, embeds = articles(p['cluster'])
+    outlets, embeds, lead_photos = articles(p['cluster'])
     # viral human-interest stories are mostly carried by one of the 4 mainstream outlets first; one real article is
     # enough (the video ends with his "based on social media and media reports" line)
     if not outlets:
@@ -589,7 +594,9 @@ def build(p, work):
     ref = _frame(named[0], os.path.join(work, 'ref.jpg'), at=1.0) if named else None
     # clips first, the people's own channels first (moments.find sorts them so), photos only to fill: user 10-31 "in
     # SAMPLE-Marvin-Shivani-1min b-roll was perfect" - every shot there was a moment from the two people's own videos
-    found = [m for m in found if m['kind'] == 'clip'] + [m for m in found if m['kind'] != 'clip']
+    found = ([m for m in found if m['kind'] == 'clip'] + [m for m in found if m['kind'] != 'clip'] +
+             [{'kind': 'photo', 'url': u, 'desc': 'news photo of the story'} for u in lead_photos])  # live 10-31: YouTube
+    # blocked + Bing gave 5 photos -> 7 sources, the copyright gate refused the film
     pool, rest, bad = [], list(enumerate(found[:36])), set()
     while rest and len(story) + len(pool) < ENOUGH:
         batch = []
