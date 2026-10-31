@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from . import ai, cloud, hindi, moments, schedule, sources
+from . import ai, cloud, hindi, moments, schedule
 
 IST = ZoneInfo('Asia/Kolkata')
 QUEUE = os.path.join(schedule.STATE, 'viral_queue')
@@ -270,6 +270,44 @@ def candidates():
     return out[:60]
 
 
+def _article(url):
+    """The article text from the page's JSON-LD articleBody (MEASURED 10-31 on TV9, India TV, ABP, News18: 2,100-5,000
+    clean Hindi characters), paragraphs only as a fallback. Live test 3: the paragraph reader returned headline + CSS
+    code for 3 stories, which passed a length check - so only text with 600+ Hindi letters counts."""
+    import html
+    try:
+        h = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                                   'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36'}), timeout=20).read().decode('utf-8', 'ignore')
+    except (urllib.error.URLError, OSError, ValueError):
+        return ''
+    body = ''
+    for blk in re.findall(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>', h, re.S):
+        try:
+            d = json.loads(blk.strip())
+        except ValueError:
+            continue
+        for x in (d if isinstance(d, list) else d.get('@graph', [d])):
+            if isinstance(x, dict) and isinstance(x.get('articleBody'), str) and len(x['articleBody']) > len(body):
+                body = html.unescape(re.sub(r'<[^>]+>', ' ', x['articleBody']))
+    if len(body) < 400:
+        paras = [html.unescape(re.sub(r'<[^>]+>', '', p_)).strip() for p_ in re.findall(r'<p[^>]*>(.*?)</p>', h, re.S)]
+        body = ' '.join(p_ for p_ in paras if len(p_) > 60)
+    body = ' '.join(body.split())[:4000]
+    return body if sum(1 for ch in body if '\u0900' <= ch <= '\u097f') >= 600 else ''
+
+
+def articles(cluster):
+    out, seen = [], set()
+    for it in cluster['links']:
+        if it['outlet'] in seen:
+            continue
+        text = _article(it['url'])
+        if text:
+            seen.add(it['outlet'])
+            out.append({'outlet': it['outlet'], 'url': it['url'], 'title': it['title'], 'text': text})
+    return out
+
+
 def pick(recent):
     cands = candidates()
     lines = '\n'.join('{}. ({} outlets) {}'.format(i, len(c['outlets']), c['title']) for i, c in enumerate(cands))
@@ -360,11 +398,11 @@ def _check(files, story, names, work):
 def build(p, work):
     t0 = time.time()
     stage = lambda s: log('  [%4.0f s] %s' % (time.time() - t0, s))
-    outlets, _ = sources.articles(p['cluster'], p['query'])
-    # viral human-interest stories are mostly carried by one of the 4 mainstream outlets first; one readable article with
-    # real detail is enough (the video ends with his "based on social media and media reports" line)
-    if not outlets or (len(outlets) < 2 and len(outlets[0].get('text', '')) < 800):
-        return {'skip': 'no readable article with enough detail (%d outlets)' % len(outlets)}
+    outlets = articles(p['cluster'])
+    # viral human-interest stories are mostly carried by one of the 4 mainstream outlets first; one real article is
+    # enough (the video ends with his "based on social media and media reports" line)
+    if not outlets:
+        return {'skip': 'no readable article'}
     s = script(outlets)
     if s.get('skip'):
         return s
