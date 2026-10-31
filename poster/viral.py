@@ -57,7 +57,9 @@ PICK = """You run an Indian Hindi Facebook page whose long videos go viral: stor
 talking about on social media - an influencer feud or emotional breakdown, a poor person's rise ("झुग्गी से सुपरमॉडल"),
 an unusual love story, a kind or brave act, a stunning "अजब-गजब" oddity, a family drama that went viral.
 NEVER: government orders, policy, elections or party politics, markets, routine crime or accidents without a human story.
-From the candidates, choose the 4 with the strongest human drama that Indians are discussing right now.
+Each candidate shows how many Hindi news outlets carry it in the last 2 days: MORE OUTLETS = MORE VIRAL RIGHT NOW.
+Prefer FAMOUS people everyone knows or is talking about (YouTubers, influencers, Bigg Boss / TV / film stars, cricketers)
+and the stories carried by the most outlets. From the candidates, choose the 4 most viral people stories.
 Do NOT pick any story in RECENT (even reworded).
 CANDIDATES:
 {cands}
@@ -244,6 +246,62 @@ def _items(name, url):
     return out
 
 
+GNEWS_QUERIES = ['यूट्यूबर', 'इन्फ्लुएंसर', 'बिग बॉस', 'सोशल मीडिया पर वायरल', 'वायरल वीडियो', 'इंस्टाग्राम',
+                 'एक्ट्रेस', 'फूट-फूट कर रोने']  # people everyone is talking about (user 10-31: "famous and trending and viral")
+UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36'
+
+
+def _gnews(q, days=2):
+    """Google News search, Hindi / India: every Hindi outlet, not only the 4 feeds. MEASURED 10-31: the Shivani-Marvin
+    story had 18 articles from 15 outlets in 2 days and was in none of the 4 feeds."""
+    import email.utils
+    import html
+    u = 'https://news.google.com/rss/search?' + urllib.parse.urlencode({'q': '%s when:%dd' % (q, days), 'hl': 'hi', 'gl': 'IN',
+                                                                         'ceid': 'IN:hi'})
+    try:
+        x = urllib.request.urlopen(urllib.request.Request(u, headers={'User-Agent': UA}), timeout=20).read().decode('utf-8', 'ignore')
+    except (urllib.error.URLError, OSError):
+        return []
+    out = []
+    for it in re.findall(r'<item>(.*?)</item>', x, re.S):
+        t, a, src = (re.search(r'<title>(.*?)</title>', it, re.S), re.search(r'/articles/([^?<]+)', it),
+                     re.search(r'<source[^>]*>(.*?)</source>', it, re.S))
+        if not (t and a and src):
+            continue
+        title, outlet = html.unescape(t.group(1)).strip(), html.unescape(src.group(1)).strip()
+        if title.endswith(' - ' + outlet):
+            title = title[:-len(outlet) - 3]
+        try:
+            age = (schedule.now() - email.utils.parsedate_to_datetime(re.search(r'<pubDate>(.*?)</pubDate>', it).group(1))).total_seconds() / 3600
+        except (AttributeError, TypeError, ValueError):
+            age = None
+        out.append({'outlet': outlet, 'title': title, 'url': 'gnews:' + a.group(1), 'age_h': age})
+    return out
+
+
+def _resolve(url):
+    """A Google News link -> the article's own address (its page carries the signature the decode call needs; tested
+    10-31: Bhaskar, Live Hindustan, Jagran links came back). '' when it cannot."""
+    if not url.startswith('gnews:'):
+        return url
+    aid = url[6:]
+    try:
+        page = urllib.request.urlopen(urllib.request.Request('https://news.google.com/rss/articles/' + aid, headers={'User-Agent': UA}),
+                                      timeout=20).read().decode('utf-8', 'ignore')
+        sg, ts = re.search(r'data-n-a-sg="([^"]+)"', page), re.search(r'data-n-a-ts="([^"]+)"', page)
+        if not (sg and ts):
+            return ''
+        inner = ['garturlreq', [['X', 'X', ['X', 'X'], None, None, 1, 1, 'US:en', None, 1, None, None, None, None, None, 0, 1],
+                                'X', 'X', 1, [1, 1, 1], 1, 1, None, 0, 0, None, 0], aid, int(ts.group(1)), sg.group(1)]
+        body = urllib.parse.urlencode({'f.req': json.dumps([[['Fbv4je', json.dumps(inner), None, 'generic']]])}).encode()
+        r = urllib.request.urlopen(urllib.request.Request('https://news.google.com/_/DotsSplashUi/data/batchexecute', data=body, headers={
+            'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'}), timeout=20).read().decode('utf-8', 'ignore')
+        m = re.search(r'garturlres.{0,10}?(https?://[^\\"]+)', r)
+        return m.group(1) if m else ''
+    except (urllib.error.URLError, OSError, ValueError):
+        return ''
+
+
 def _words(t):
     """Hindi words of 3+ letters, plus numbers and short Latin tokens ("40", "km", "ias"): those mark the same story
     across outlets (TV9 and India TV's water-bike story shared only 2 Hindi words, but also "40" and "km")."""
@@ -254,9 +312,11 @@ def _words(t):
 
 def candidates():
     """Hindi-aware grouping (the general one keeps only English words: live 10-31 it turned 23 Hindi headlines into 0
-    stories). A story counts when 2+ outlets carry it, or when one outlet dated it within 24 h."""
+    stories). A story counts when 2+ outlets carry it, or when one outlet dated it within 24 h; the most-covered first."""
     with ThreadPoolExecutor(4) as ex:
         items = [i for rows in ex.map(lambda kv: _items(*kv), VIRAL_FEEDS.items()) for i in rows]
+        items += [i for rows in ex.map(_gnews, GNEWS_QUERIES) for i in rows]
+    items = list({(i['outlet'], i['title']): i for i in items}.values())
     clusters = []
     for it in items:
         w = _words(it['title'])
@@ -327,10 +387,13 @@ def articles(cluster):
     for it in cluster['links']:
         if it['outlet'] in seen:
             continue
-        text, embeds = _article(it['url'])
+        url = _resolve(it['url'])
+        text, embeds = _article(url) if url else ('', [])
         if text:
             seen.add(it['outlet'])
-            out.append({'outlet': it['outlet'], 'url': it['url'], 'title': it['title'], 'text': text, 'embeds': embeds})
+            out.append({'outlet': it['outlet'], 'url': url, 'title': it['title'], 'text': text, 'embeds': embeds})
+            if len(out) >= 3:
+                break
     return out
 
 
@@ -589,6 +652,41 @@ def _spend(seconds):
     schedule._save('viral_render_usage.json', {k: u[k] for k in sorted(u)[-3:]})
 
 
+def _queue(res, p, work, first=False):
+    dest = os.path.join(QUEUE, ('0-' if first else '') + os.path.basename(work))  # '0-' sorts before dates: posted next
+    os.makedirs(dest, exist_ok=True)
+    shutil.move(res['video'], os.path.join(dest, 'video.mp4'))
+    json.dump({'built': schedule.now().isoformat(), 'title': res['title'], 'caption': res['caption'], 'query': p['query'],
+               'seconds': res['seconds'], 'shots': res['shots']}, open(os.path.join(dest, 'meta.json'), 'w'), ensure_ascii=False, indent=1)
+    shutil.rmtree(work, ignore_errors=True)
+    log('VIRAL READY %s (%d s, %d shots)' % (res['title'][:80], res['seconds'], res['shots']))
+
+
+def build_story(q):
+    """A story the user names ("lets post shivani one"): found on Google News, built now, posted next."""
+    rows = _gnews(q, days=3)
+    if not rows:
+        return log('no Google News articles for: %s' % q)
+    outlets = sorted({r['outlet'] for r in rows})
+    cluster = {'title': rows[0]['title'], 'outlets': outlets, 'links': rows, 'fresh_h': min(r['age_h'] or 99 for r in rows)}
+    out = ai.gemini(PICK.format(cands='0. (%d outlets) %s' % (len(outlets), cluster['title']), recent='- none'), temperature=0.2,
+                    chain='bulk')
+    p = next((x for x in out.get('picks') or [] if isinstance(x, dict) and x.get('query')), None)
+    if not p:
+        return log('no search query from the AI for: %s' % q)
+    p['title'], p['cluster'] = cluster['title'], cluster
+    if p.get('query_hi'):
+        hindi.HI_QUERY[p['query']] = p['query_hi']
+    work = os.path.join(os.path.dirname(QUEUE), 'viral_work', time.strftime('%Y%m%d-%H%M%S'))
+    os.makedirs(work, exist_ok=True)
+    log('VIRAL story (asked for, %d outlets): %s' % (len(outlets), p['title'][:100]))
+    res = build(p, work)
+    if res.get('skip'):
+        shutil.rmtree(work, ignore_errors=True)
+        return log('  viral skip (%s)' % res['skip'])
+    _queue(res, p, work, first=True)
+
+
 def build_one():
     """Called by the builder timer: one video whenever fewer than BUFFER are ready (any hour; the publisher paces them)."""
     if len(ready()) >= BUFFER:
@@ -626,13 +724,7 @@ def build_one():
             schedule._save('viral_failed.json', failed)
             shutil.rmtree(work, ignore_errors=True)
             continue
-        dest = os.path.join(QUEUE, os.path.basename(work))
-        os.makedirs(dest, exist_ok=True)
-        shutil.move(res['video'], os.path.join(dest, 'video.mp4'))
-        json.dump({'built': schedule.now().isoformat(), 'title': res['title'], 'caption': res['caption'], 'query': p['query'],
-                   'seconds': res['seconds'], 'shots': res['shots']}, open(os.path.join(dest, 'meta.json'), 'w'), ensure_ascii=False, indent=1)
-        shutil.rmtree(work, ignore_errors=True)
-        log('VIRAL READY %s (%d s, %d shots)' % (res['title'][:80], res['seconds'], res['shots']))
+        _queue(res, p, work)
         return
 
 

@@ -488,10 +488,12 @@ if __name__ == '__main__':
         reel_publish()
     elif cmd == 'reel-build':
         reel_build_one()
-    elif cmd in ('viral-build', 'viral-publish', 'viral-test'):  # Indian Daily News long videos (poster/viral.py)
+    elif cmd in ('viral-build', 'viral-publish', 'viral-test', 'viral-story'):  # Indian Daily News long videos (poster/viral.py)
         load_env()
         from poster import viral
-        if cmd == 'viral-build':
+        if cmd == 'viral-story':  # run.py viral-story "<Hindi search words>": that story, built now, posted next
+            viral.build_story(' '.join(sys.argv[2:]))
+        elif cmd == 'viral-build':
             viral.build_one()
         elif cmd == 'viral-publish':
             viral.publish_due()
