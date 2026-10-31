@@ -1,4 +1,4 @@
-"""Indian Daily News long videos (user 2026-10-31: "yes go ahead and keep this ... video length 3 minute +"): 2-3 a day,
+"""Indian Daily News long videos (user 2026-10-31: "yes go ahead and keep this ... video length 3 minute +"): 5 a day (10-31),
 replacing the Page's short Reels, in The Shiva Kumar's measured format (cloudrun/viral_render.py draws it):
   - stories about PEOPLE going viral (influencer drama, underdog rise, unusual love, oddities) - his 0.6-2.8M-view hits;
     plain government news got ~1% of that (measured on his last 9 + Black Bharat TV's last 9);
@@ -17,6 +17,7 @@ import subprocess
 import tarfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -26,8 +27,11 @@ from . import ai, cloud, hindi, moments, schedule
 
 IST = ZoneInfo('Asia/Kolkata')
 QUEUE = os.path.join(schedule.STATE, 'viral_queue')
-PER_DAY = 3
-WINDOWS = [(9 * 60, 11 * 60 + 30), (14 * 60, 16 * 60 + 30), (19 * 60, 21 * 60 + 30)]  # IST, one video in each
+PER_DAY = 5                # user 2026-10-31: 5 a day, every one of them published
+WINDOWS = [(7 * 60, 8 * 60 + 30), (10 * 60, 11 * 60 + 30), (13 * 60, 14 * 60 + 30), (16 * 60 + 30, 18 * 60),
+           (20 * 60, 21 * 60 + 30)]  # IST, one video in each
+POST_HOURS = (6, 23)       # user rule 10-24: post only 06:00-23:00 local; a missed slot is caught up before 23:00
+BUFFER = 2                 # videos kept built ahead, at any hour, so no slot waits on a ~20-min build
 VOICE_DIR = os.environ.get('VIRAL_VOICE_DIR', '/home/poster/voices/shiva-hindi')
 SFX = os.environ.get('VIRAL_SFX', '/home/poster/sfx/viral_hit.wav')  # Meta SC whoosh_2 + impact_1 -6 dB (measured match)
 WORDS = (480, 650)        # the clone reads ~158 words/min (measured 10-31) -> about 3:00-4:10 like his 2:40-4:17
@@ -122,8 +126,8 @@ def ready():
         m = os.path.join(QUEUE, d, 'meta.json')
         if os.path.exists(m):
             meta = json.load(open(m))
-            if schedule.now() - datetime.fromisoformat(meta['built']) > timedelta(hours=10):
-                shutil.rmtree(os.path.join(QUEUE, d), ignore_errors=True)  # stale news
+            if schedule.now() - datetime.fromisoformat(meta['built']) > timedelta(hours=20) and not meta.get('attempted'):
+                shutil.rmtree(os.path.join(QUEUE, d), ignore_errors=True)  # stale (people stories last a day; night builds post at 07:00)
                 continue
             out.append(dict(meta, dir=os.path.join(QUEUE, d)))
     return out
@@ -499,10 +503,8 @@ def build(p, work):
 
 
 def build_one():
-    """Called by the builder timer: one video when the day's 3 are not yet covered by posted + ready."""
-    n_ready, n_posted = len(ready()), len(posted_today())
-    hour = now_ist().hour
-    if n_ready >= 1 or n_ready + n_posted >= PER_DAY or not 6 <= hour < 21:
+    """Called by the builder timer: one video whenever fewer than BUFFER are ready (any hour; the publisher paces them)."""
+    if len(ready()) >= BUFFER:
         return
     from . import dedupe
     hist = _load('viral_posted.json', [])
@@ -546,13 +548,13 @@ def build_one():
 
 # ---- publishing --------------------------------------------------------------------------------------------------------
 def plan():
-    """3 random times a day, one inside each IST window, seeded by the day (a lost file gives the same times)."""
+    """5 random times a day, one inside each IST window, seeded by the day (a lost file gives the same times)."""
     day = now_ist().date()
     p = _load('viral_schedule.json', {})
-    if p.get('day') != day.isoformat():
+    if p.get('day') != day.isoformat() or len(p.get('slots', [])) != len(WINDOWS):
         rng = random.Random('viral-%s' % day.isoformat())
         start = datetime(day.year, day.month, day.day, tzinfo=IST)
-        p = {'day': day.isoformat(), 'slots': [(start + timedelta(minutes=rng.uniform(a, b))).isoformat() for a, b in WINDOWS], 'done': []}
+        p = {'day': day.isoformat(), 'slots': [(start + timedelta(minutes=rng.uniform(a, b))).isoformat() for a, b in WINDOWS]}
         schedule._save('viral_schedule.json', p)
     return p
 
@@ -570,27 +572,66 @@ def _upload(page, token, video, title, description):
         return json.loads(r.read()).get('id')
 
 
-def publish_due():
-    p, q = plan(), ready()
-    due = [s for s in p['slots'] if s not in p['done'] and datetime.fromisoformat(s) <= schedule.now()]
-    if not (due and q) or len(posted_today()) >= PER_DAY:
-        return
-    hist = _load('viral_posted.json', [])
-    if hist and schedule.now() - datetime.fromisoformat(hist[-1]['time']) < timedelta(hours=2):
-        return
-    v = q[0]
-    p['done'].append(due[0])
-    schedule._save('viral_schedule.json', p)  # marked first: a video is never posted twice
+def _on_page(page, token, caption):
+    """Is a video with this exact text already on the Page? (an upload whose answer was lost). None = cannot tell."""
+    url = 'https://graph.facebook.com/v26.0/%s/videos?fields=description&limit=10&access_token=%s' % (page, urllib.parse.quote(token))
     try:
-        vid = _upload(os.environ['FB_PAGE_ID'], os.environ['FB_PAGE_TOKEN'], os.path.join(v['dir'], 'video.mp4'), v['title'],
-                      v['caption'])
-    except urllib.error.HTTPError as e:  # Facebook refused it: nothing went out, the video stays for the next time
-        log('VIRAL FACEBOOK ERROR: HTTP %s %s' % (e.code, e.read().decode('utf-8', 'ignore')[:300]))
-        return
-    except (urllib.error.URLError, OSError) as e:  # unknown end: dropped, never retried (no double post)
-        log('VIRAL UPLOAD ENDED UNKNOWN (%s): dropped' % str(e)[:150])
-        shutil.rmtree(v['dir'], ignore_errors=True)
-        return
+        rows = json.loads(urllib.request.urlopen(url, timeout=60).read()).get('data') or []
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    return any((r.get('description') or '').strip() == caption.strip() for r in rows)
+
+
+def _mark(v, **kw):
+    m = os.path.join(v['dir'], 'meta.json')
+    meta = dict(json.load(open(m)), **kw)
+    json.dump(meta, open(m, 'w'), ensure_ascii=False, indent=1)
+
+
+def _posted(v, vid):
+    hist = _load('viral_posted.json', [])
     schedule._save('viral_posted.json', (hist + [{'time': schedule.now().isoformat(), 'title': v['title'], 'id': vid}])[-300:])
     shutil.rmtree(v['dir'], ignore_errors=True)  # published and deleted
     log('VIRAL PUBLISHED %s %s' % (vid, v['title'][:80]))
+
+
+def publish_due():
+    """Posts by COUNT, not by slot: whenever fewer have gone out today than slots have passed, the next ready video
+    goes (2 h apart on schedule, 75 min when catching up), so a late build or a refused upload never costs a post.
+    No double posts: an upload with no answer is checked on the Page before it is ever sent again."""
+    q = ready()
+    if not q or not POST_HOURS[0] <= now_ist().hour < POST_HOURS[1]:
+        return
+    now, n = schedule.now(), len(posted_today())
+    due = sum(1 for s_ in plan()['slots'] if datetime.fromisoformat(s_) <= now)
+    if n >= min(due, PER_DAY):
+        return
+    hist = _load('viral_posted.json', [])
+    gap = timedelta(hours=2) if n == due - 1 else timedelta(minutes=75)
+    if hist and now - datetime.fromisoformat(hist[-1]['time']) < gap:
+        return
+    page, token = os.environ['FB_PAGE_ID'], os.environ['FB_PAGE_TOKEN']
+    v = q[0]
+    if v.get('attempted'):  # its last upload ended without an answer
+        seen = _on_page(page, token, v['caption'])
+        if seen:
+            return _posted(v, None)
+        if seen is None or now - datetime.fromisoformat(v['attempted']) < timedelta(minutes=30):
+            return  # Facebook may still be processing it: wait, never risk a second copy
+        log('VIRAL: earlier upload is not on the Page after 30 min, sending again')
+    _mark(v, attempted=now.isoformat())
+    try:
+        vid = _upload(page, token, os.path.join(v['dir'], 'video.mp4'), v['title'], v['caption'])
+    except urllib.error.HTTPError as e:  # Facebook refused it: nothing went out
+        fails = v.get('fb_errors', 0) + 1
+        log('VIRAL FACEBOOK ERROR %d/3: HTTP %s %s' % (fails, e.code, e.read().decode('utf-8', 'ignore')[:300]))
+        if fails >= 3:
+            log('VIRAL: dropped after 3 refusals, the builder makes another')
+            shutil.rmtree(v['dir'], ignore_errors=True)
+        else:
+            _mark(v, attempted=None, fb_errors=fails)
+        return
+    except (urllib.error.URLError, OSError) as e:  # unknown end: checked on the Page next run, before any resend
+        log('VIRAL UPLOAD ENDED UNKNOWN (%s): checking the Page before any retry' % str(e)[:150])
+        return
+    _posted(v, vid)

@@ -1,5 +1,5 @@
 [Unit]
-Description=Indian Daily News long videos: publish the oldest ready video when one of today's 3 times is due
+Description=Indian Daily News long videos: publish when fewer than today's due slots have gone out (5 a day, catch-up before 23:00 IST)
 After=network-online.target
 Wants=network-online.target
 
