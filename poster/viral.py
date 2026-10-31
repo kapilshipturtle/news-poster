@@ -48,8 +48,10 @@ VIRAL_FEEDS = {  # MEASURED 2026-10-31: these answer with fresh people/oddity st
     'News18 Hindi': 'https://hindi.news18.com/rss/khabar/ajab-gajab.xml',  # 200 items, NO dates: counts only with a 2nd outlet
 }  # tested and NOT working: Aaj Tak, Amar Ujala, Jagran, Patrika (404), NDTV (403), Live Hindustan (503), Zee (no answer)
 MAX_USE = 3               # one picture on screen at most 3 times (he repeats pictures too) - more only when few exist
-ENOUGH = 16               # different pictures worth fetching for a ~3.5-min video (each shows ~2-3 times)
-MIN_PICS = 6              # different pictures a video needs (story video pieces count: his videos replay the viral clip)
+ENOUGH = 24               # different pictures worth fetching for a ~3.5-min video (his: many sources, ~6.6 s shots)
+MIN_PICS = 10             # different pictures a video needs
+STORY_PIECES, STORY_USES = 3, 2  # the article's own video is a SUPPLEMENT (user 10-31: one video playing through the
+                                 # whole film is not what he does): 3 pieces, each on screen at most twice
 MAX_SHOT = 7.5            # his median shot is 6.6 s; a longer sentence gets two pictures
 moments.PREFER_VERTICAL = False  # the media window is 16:9, not a phone screen
 
@@ -113,6 +115,9 @@ Mark a picture BAD if: it is a TV graphic, headline banner, breaking-news frame,
 with long text; a split screen or collage; a watermark across it; blank, black or blurry; or it clearly shows people or
 places that have nothing to do with this story. A small channel logo in a corner is fine.
 Return JSON: {{"bad": [<numbers>]}}"""
+REF_RULE = """
+Picture R (last) is from the story's own video and shows the REAL people. Mark BAD any numbered picture that shows a
+DIFFERENT person presented as them (someone else with the same name). Picture R itself is never in "bad"."""
 
 
 # ---- small helpers ---------------------------------------------------------------------------------------------------
@@ -474,7 +479,7 @@ def story_clips(outlets, work):
             log('  story video not fetched: %s %s' % (u, ((r and r.stderr) or '').strip()[-120:]))
             continue
         d = _dur(src)
-        step = max(7.0, (d - 3) / 8)
+        step = max(7.0, (d - 3) / STORY_PIECES)
         t = 0.0
         while t < max(1.0, d - 3):
             piece = os.path.join(work, 'story%d_%02d.mp4' % (k, int(t)))
@@ -485,7 +490,9 @@ def story_clips(outlets, work):
                 out.append(({'kind': 'clip', 'desc': 'the viral video itself (%s)' % urllib.parse.urlparse(u).netloc}, piece))
             t += step
         os.remove(src)
-    return out
+        if len(out) >= STORY_PIECES:
+            break
+    return out[:STORY_PIECES]
 
 
 def _frame(path, out, at=0.5):
@@ -496,21 +503,22 @@ def _frame(path, out, at=0.5):
     return out
 
 
-def _check(files, story, names, work):
-    """One vision look at all story pictures (16:9 contact sheet); returns indexes to replace."""
+def _check(files, story, names, work, ref=None):
+    """One vision look at all story pictures (16:9 contact sheet); returns indexes to replace. With `ref` (a frame of the
+    story's own video) first, labelled R: a picture showing a DIFFERENT person under the same name is refused."""
     from PIL import Image, ImageDraw
-    thumbs = [_frame(f, os.path.join(work, 'chk%03d.jpg' % i)) for i, f in enumerate(files)]
+    thumbs = [_frame(f, os.path.join(work, 'chk%03d.jpg' % i)) for i, f in enumerate(files)] + ([ref] if ref else [])
     w, h, cols = 320, 178, 6
     sheet = Image.new('RGB', (w * cols, (h + 24) * ((len(thumbs) + cols - 1) // cols)), 'white')
     d = ImageDraw.Draw(sheet)
     for i, t in enumerate(thumbs):
         x, y = (i % cols) * w, (i // cols) * (h + 24)
         sheet.paste(Image.open(t).convert('RGB').resize((w, h)), (x, y + 24))
-        d.text((x + 4, y + 4), str(i), fill='black')
+        d.text((x + 4, y + 4), 'R' if i == len(files) else str(i), fill='black')
     p = os.path.join(work, 'check.jpg')
     sheet.save(p, quality=85)
     try:
-        out = ai.gemini_vision(CHECK.format(story=story, names=', '.join(names)), [p])
+        out = ai.gemini_vision(CHECK.format(story=story, names=', '.join(names)) + (REF_RULE if ref else ''), [p])
     except ai.AIUnavailable:
         return []
     return [b for b in (out.get('bad') or []) if isinstance(b, int) and 0 <= b < len(files)]
@@ -538,12 +546,11 @@ def build(p, work):
     stage('story video pieces: %d' % len(story))
     # fetched in batches only until there are enough (live test 6: each YouTube picture costs ~1.5 min of the free
     # server's CPU, and fetching all 30 took 13+ min although ~12 were needed)
-    if story:  # its own video shows the real people; a found picture NAMING them may be someone else with that name
-        # (live test 7: Bing's "Aditya Singh" was a TV actor) - pictures of places, cars, objects stay (test 8 without
-        # them: 36 shots of one man talking)
-        who = {w.lower() for n in names for w in re.findall(r'[A-Za-z]{3,}', n)}
-        found = [m for m in found if not who & set(re.findall(r'[a-z]{3,}', m.get('desc', '').lower()))]
-    pool, rest, bad = [], list(enumerate(found[:30])), set()
+    ref = _frame(story[0][1], os.path.join(work, 'ref.jpg'), at=1.0) if story else None  # the real person (test 7: a namesake)
+    # clips first, the people's own channels first (moments.find sorts them so), photos only to fill: user 10-31 "in
+    # SAMPLE-Marvin-Shivani-1min b-roll was perfect" - every shot there was a moment from the two people's own videos
+    found = [m for m in found if m['kind'] == 'clip'] + [m for m in found if m['kind'] != 'clip']
+    pool, rest, bad = [], list(enumerate(found[:36])), set()
     while rest and len(story) + len(pool) < ENOUGH:
         batch = []
         while rest and len(story) + len(pool) + len(batch) < ENOUGH + 4:  # +4 spare: the check refuses some
@@ -551,12 +558,12 @@ def build(p, work):
             f = _fetch(m, 8.0, os.path.join(work, 'src%03d' % k))
             if f:
                 batch.append((m, f))
-        no = set(_check([f for _, f in batch], p['title'], names, work)) if batch else set()
+        no = set(_check([f for _, f in batch], p['title'], names, work, ref)) if batch else set()
         bad |= {f for j, (_, f) in enumerate(batch) if j in no}
         pool += [x for j, x in enumerate(batch) if j not in no]
     # the story's own video skips the check: it IS the story, captions and all (live test 6: the check refused all 8
     # pieces of the Instagram reel an article was about, for its burned-in captions)
-    pool = story + pool
+    pool = pool + story
     stage('usable pictures: %d (%d failed the picture check)' % (len(pool), len(bad)))
     if len(pool) < MIN_PICS:
         return {'skip': 'only %d usable pictures' % len(pool)}
@@ -583,9 +590,10 @@ def build(p, work):
     order += [k % len(pool) for k in range(len(order), len(slots))]
     uses, files, starts = {}, [], []
     cap = max(MAX_USE, -(-len(slots) // len(pool)))  # few pictures (a small viral story): each shows more often
+    story_files = {f for _, f in story}
     for (i, a, b), x in zip(slots, order):
-        if uses.get(x, 0) >= cap:  # picked too often: the least-used picture instead
-            x = min(range(len(pool)), key=lambda k: uses.get(k, 0))
+        if uses.get(x, 0) >= (STORY_USES if pool[x][1] in story_files else cap):  # too often: the least-used instead
+            x = min(range(len(pool)), key=lambda k: (pool[k][1] in story_files and uses.get(k, 0) >= STORY_USES, uses.get(k, 0)))
         f = pool[x][1]
         clip = _dur(f) if f.endswith('.mp4') else 0.0
         # a clip shown again starts further in, so the same seconds are never on screen twice
