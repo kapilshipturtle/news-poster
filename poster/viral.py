@@ -41,7 +41,8 @@ VIRAL_FEEDS = {  # MEASURED 2026-10-31: these answer with fresh people/oddity st
     'ABP Live': 'https://www.abplive.com/trending/feed',               # 10 items, dated
     'News18 Hindi': 'https://hindi.news18.com/rss/khabar/ajab-gajab.xml',  # 200 items, NO dates: counts only with a 2nd outlet
 }  # tested and NOT working: Aaj Tak, Amar Ujala, Jagran, Patrika (404), NDTV (403), Live Hindustan (503), Zee (no answer)
-MAX_USE = 3               # one picture on screen at most 3 times (he repeats pictures too)
+MAX_USE = 3               # one picture on screen at most 3 times (he repeats pictures too) - more only when few exist
+MIN_PICS = 6              # different pictures a video needs (story video pieces count: his videos replay the viral clip)
 MAX_SHOT = 7.5            # his median shot is 6.6 s; a longer sentence gets two pictures
 moments.PREFER_VERTICAL = False  # the media window is 16:9, not a phone screen
 
@@ -273,6 +274,21 @@ def candidates():
     return out[:60]
 
 
+EMBEDS = [(r'(?:twitter|x)\.com/(\w+)/status/(\d+)', 'https://x.com/{}/status/{}'),
+          (r'instagram\.com/(?:reel|p)/([\w-]{6,})', 'https://www.instagram.com/reel/{}/'),
+          (r'(?:youtube\.com/embed/|youtu\.be/)([\w-]{11})', 'https://www.youtube.com/watch?v={}')]
+
+
+def _embeds(h):
+    """The viral post the article is about, as embedded in the page (MEASURED 10-31: 7 of 9 TV9/ABP articles embed
+    an X, Instagram or YouTube video)."""
+    found = []
+    for rx, fmt in EMBEDS:
+        for m in re.finditer(rx, h):
+            found.append((m.start(), fmt.format(*m.groups())))
+    return list(dict.fromkeys(u for _, u in sorted(found)))
+
+
 def _article(url):
     """The article text from the page's JSON-LD articleBody (MEASURED 10-31 on TV9, India TV, ABP, News18: 2,100-5,000
     clean Hindi characters), paragraphs only as a fallback. Live test 3: the paragraph reader returned headline + CSS
@@ -282,7 +298,7 @@ def _article(url):
         h = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                                    'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36'}), timeout=20).read().decode('utf-8', 'ignore')
     except (urllib.error.URLError, OSError, ValueError):
-        return ''
+        return '', []
     body = ''
     for blk in re.findall(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>', h, re.S):
         try:
@@ -296,7 +312,7 @@ def _article(url):
         paras = [html.unescape(re.sub(r'<[^>]+>', '', p_)).strip() for p_ in re.findall(r'<p[^>]*>(.*?)</p>', h, re.S)]
         body = ' '.join(p_ for p_ in paras if len(p_) > 60)
     body = ' '.join(body.split())[:4000]
-    return body if sum(1 for ch in body if '\u0900' <= ch <= '\u097f') >= 600 else ''
+    return (body if sum(1 for ch in body if '\u0900' <= ch <= '\u097f') >= 600 else ''), _embeds(h)
 
 
 def articles(cluster):
@@ -304,10 +320,10 @@ def articles(cluster):
     for it in cluster['links']:
         if it['outlet'] in seen:
             continue
-        text = _article(it['url'])
+        text, embeds = _article(it['url'])
         if text:
             seen.add(it['outlet'])
-            out.append({'outlet': it['outlet'], 'url': it['url'], 'title': it['title'], 'text': text})
+            out.append({'outlet': it['outlet'], 'url': it['url'], 'title': it['title'], 'text': text, 'embeds': embeds})
     return out
 
 
@@ -369,6 +385,35 @@ def _fetch(m, dur, out):
         return None
 
 
+def story_clips(outlets, work):
+    """The story's own viral video from the articles' embeds (X / Instagram / YouTube: the server fetches all three
+    without a login, tested 10-31), in 8.4 s pieces 7+ s apart - what his videos show most. Live test 5 (10-31): three
+    small viral stories found only 0-6 pictures on YouTube + Bing, so all three were skipped."""
+    out = []
+    for k, u in enumerate(list(dict.fromkeys(e for o in outlets for e in o.get('embeds', [])))[:3]):
+        src = os.path.join(work, 'story%d.mp4' % k)
+        try:
+            r = moments._yt(['-f', 'bv*+ba/b', '-S', 'res:1280', '--merge-output-format', 'mp4', '--max-filesize', '150M',
+                             '--match-filter', 'duration<=?300 & !is_live', '-o', src, u], timeout=240)
+        except subprocess.TimeoutExpired:
+            r = None
+        if not os.path.exists(src):
+            log('  story video not fetched: %s %s' % (u, ((r and r.stderr) or '').strip()[-120:]))
+            continue
+        d = _dur(src)
+        step = max(7.0, (d - 3) / 8)
+        t = 0.0
+        while t < max(1.0, d - 3):
+            piece = os.path.join(work, 'story%d_%02d.mp4' % (k, int(t)))
+            subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-ss', '%.2f' % t, '-i', src, '-t', '8.4', '-vf', 'scale=-2:800',
+                            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '128k', piece])
+            if os.path.exists(piece) and _dur(piece) > 1.0:
+                out.append(({'kind': 'clip', 'desc': 'the viral video itself (%s)' % urllib.parse.urlparse(u).netloc}, piece))
+            t += step
+        os.remove(src)
+    return out
+
+
 def _frame(path, out, at=0.5):
     if path.endswith('.jpg'):
         shutil.copy(path, out)
@@ -415,7 +460,8 @@ def build(p, work):
     stage('pictures found: %d' % len(found))
     # every picture is downloaded and checked BEFORE the voice is made (live test 10-31: a 3.7-min voice was made, then
     # the pictures ran out at shot 3). Clips are cut 8.4 s long so they fit any slot; photos as they are.
-    pool = []
+    pool = story_clips(outlets, work)
+    stage('story video pieces: %d' % len(pool))
     for k, m in enumerate(found[:30]):
         f = _fetch(m, 8.0, os.path.join(work, 'src%03d' % k))
         if f:
@@ -423,7 +469,7 @@ def build(p, work):
     bad = set(_check([f for _, f in pool], p['title'], names, work)) if pool else set()
     pool = [x for k, x in enumerate(pool) if k not in bad]
     stage('usable pictures: %d (%d failed the picture check)' % (len(pool), len(bad)))
-    if len(pool) < 8:
+    if len(pool) < MIN_PICS:
         return {'skip': 'only %d usable pictures' % len(pool)}
     sents = [t['say'] for t in s['teaser']] + s['story']
     wav, cuts = voice(sents, work)
@@ -447,8 +493,9 @@ def build(p, work):
     order = [x if isinstance(x, int) and 0 <= x < len(pool) else k % len(pool) for k, x in enumerate(pk[:len(slots)])]
     order += [k % len(pool) for k in range(len(order), len(slots))]
     uses, files, starts = {}, [], []
+    cap = max(MAX_USE, -(-len(slots) // len(pool)))  # few pictures (a small viral story): each shows more often
     for (i, a, b), x in zip(slots, order):
-        if uses.get(x, 0) >= MAX_USE:  # picked too often: the least-used picture instead
+        if uses.get(x, 0) >= cap:  # picked too often: the least-used picture instead
             x = min(range(len(pool)), key=lambda k: uses.get(k, 0))
         f = pool[x][1]
         clip = _dur(f) if f.endswith('.mp4') else 0.0

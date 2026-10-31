@@ -767,6 +767,7 @@ reel.LOCAL_RENDER = False  # live 2026-10-25: the fallback render (ffmpeg 789 MB
 
 def photo(url, out):
     """moments.photo with the reason printed when a photo is dropped (it was silent: a story failed with no clue why)."""
+    url = re.sub(r'[\x00-\x20\x7f]', lambda c: '%%%02X' % ord(c.group()), url.strip())  # spaces in Bing's URLs (test 10-31)
     try:
         raw = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': moments.BING_HEADERS['User-Agent']}),
                                      timeout=25).read()

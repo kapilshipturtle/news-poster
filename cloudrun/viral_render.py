@@ -78,22 +78,30 @@ def card(img, lines, out):
     return out
 
 
+BLUR = ('[0:v]split[a][b];[a]scale=1440:800:force_original_aspect_ratio=increase,crop=1440:800,boxblur=30:3,eq=brightness=-0.08[bg];'
+        '[b]scale=-2:800[fg];[bg][fg]overlay=(W-w)/2:0,')
+FILL = 'scale=1440:800:force_original_aspect_ratio=increase,crop=1440:800,'
+
+
+def _size(src):
+    r = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', src],
+                       capture_output=True, text=True).stdout.strip().split(',')
+    return int(r[0]), int(r[1])
+
+
 def window(src, start, dur, out, still):
-    if still:  # a card or a wide photo fills the 16:9 window; a tall photo shows whole over a blurred copy of itself
-        w, h = Image.open(src).size
-        if w / h >= 1.4:
-            run('-loop', '1', '-t', '%.3f' % dur, '-i', src, '-vf',
-                'scale=1440:800:force_original_aspect_ratio=increase,crop=1440:800,setsar=1,fps=30,format=yuv420p',
-                '-c:v', 'libx264', '-crf', '18', '-preset', 'veryfast', '-an', out)
-        else:
-            run('-loop', '1', '-t', '%.3f' % dur, '-i', src, '-filter_complex',
-                '[0:v]split[a][b];[a]scale=1440:800:force_original_aspect_ratio=increase,crop=1440:800,boxblur=30:3,eq=brightness=-0.08[bg];'
-                '[b]scale=-2:800[fg];[bg][fg]overlay=(W-w)/2:0,setsar=1,fps=30,format=yuv420p',
-                '-c:v', 'libx264', '-crf', '18', '-preset', 'veryfast', '-an', out)
-    else:
-        vf = ('scale=1440:800:force_original_aspect_ratio=increase,crop=1440:800,setsar=1,fps=30,format=yuv420p,'
-              'tpad=stop_mode=clone:stop_duration=%.3f' % dur)  # a clip shorter than its slot holds its last frame
-        run('-ss', '%.3f' % start, '-i', src, '-vf', vf, '-t', '%.3f' % dur, '-c:v', 'libx264', '-crf', '18', '-preset', 'veryfast', '-an', out)
+    """A card or a wide picture fills the 16:9 window; a tall photo or a phone video (most viral posts) shows whole over
+    a blurred copy of itself."""
+    w, h = Image.open(src).size if still else _size(src)
+    look = FILL if w / h >= 1.4 else BLUR
+    vf = look + 'setsar=1,fps=30,format=yuv420p'
+    if still:
+        run('-loop', '1', '-t', '%.3f' % dur, '-i', src, '-filter_complex' if look == BLUR else '-vf', vf,
+            '-c:v', 'libx264', '-crf', '18', '-preset', 'veryfast', '-an', out)
+    else:  # a clip shorter than its slot holds its last frame
+        run('-ss', '%.3f' % start, '-i', src, '-filter_complex' if look == BLUR else '-vf',
+            vf + ',tpad=stop_mode=clone:stop_duration=%.3f' % dur, '-t', '%.3f' % dur,
+            '-c:v', 'libx264', '-crf', '18', '-preset', 'veryfast', '-an', out)
     return out
 
 
