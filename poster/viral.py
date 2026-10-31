@@ -432,18 +432,24 @@ def script(outlets):
     lo, hi = WORDS
     prompt = SCRIPT.format(lo=lo, hi=hi, sources=ai.sources_text(outlets))
     problems = None
-    for _ in range(3):
+    for _ in range(4):
         s = ai.gemini(prompt + ('\n\nYOUR LAST VERSION WAS REJECTED FOR: %s. Fix exactly that.' % '; '.join(problems) if problems else ''))
         if s.get('skip'):
             return s
         problems = []
         teaser = [t for t in s.get('teaser') or [] if isinstance(t, dict) and isinstance(t.get('say'), str) and t['say'].strip()]
         story = [x for x in s.get('story') or [] if isinstance(x, str) and x.strip()]
+        if len(teaser) > 5:  # live 10-31: 6 lines cost a whole retry - keep the first 4 and the closing question
+            teaser = teaser[:4] + teaser[-1:]
         words = sum(len(t['say'].split()) for t in teaser) + sum(len(x.split()) for x in story)
         if not 4 <= len(teaser) <= 5:
             problems.append('%d teaser lines, need 4-5' % len(teaser))
-        if not lo <= words <= hi:
-            problems.append('%d spoken words, need %d-%d' % (words, lo, hi))
+        if words < lo:  # live 10-31: 'need 480-650' came back 447, 455 - say exactly how much to add
+            problems.append('only %d spoken words: ADD about %d more words (%d more story sentences with real details '
+                            'from the sources, before the ending), so the total is %d-%d' % (words, lo + 40 - words,
+                                                                                         (lo + 40 - words) // 14 + 1, lo + 20, hi))
+        elif words > hi:
+            problems.append('%d spoken words: cut it to %d-%d' % (words, lo, hi))
         if len([h for h in s.get('headline') or [] if isinstance(h, str) and h.strip()]) != 4:
             problems.append('headline must be exactly 4 lines')
         tags = [t for t in s.get('hashtags') or [] if isinstance(t, str) and t.strip()]
