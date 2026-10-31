@@ -1,4 +1,4 @@
-"""Indian Daily News long videos (user 2026-10-31: "yes go ahead and keep this ... video length 3 minute +"): 5 a day (10-31),
+"""Indian Daily News long videos (user 2026-10-31: "yes go ahead and keep this ... video length 3 minute +"): 7 a day (10-31, US Page stopped),
 replacing the Page's short Reels, in The Shiva Kumar's measured format (cloudrun/viral_render.py draws it):
   - stories about PEOPLE going viral (influencer drama, underdog rise, unusual love, oddities) - his 0.6-2.8M-view hits;
     plain government news got ~1% of that (measured on his last 9 + Black Bharat TV's last 9);
@@ -27,9 +27,15 @@ from . import ai, cloud, hindi, moments, schedule
 
 IST = ZoneInfo('Asia/Kolkata')
 QUEUE = os.path.join(schedule.STATE, 'viral_queue')
-PER_DAY = 5                # user 2026-10-31: 5 a day, every one of them published
-WINDOWS = [(5 * 60, 6 * 60), (9 * 60 + 30, 10 * 60 + 30), (14 * 60, 15 * 60), (18 * 60 + 30, 19 * 60 + 30),
-           (22 * 60 + 30, 23 * 60 + 30)]  # IST, one video in each (user 10-31: from 5 am to around midnight)
+# user 10-31: US Page stopped, "only keep hindi as much as possible completely freely". The free Cloud Run tier is
+# 180,000 vCPU-s a month = ~1,500 s a day at 4 vCPU; a video renders in ~176 s (measured, tests 8/9 + first live) ->
+# 8 a day would use 96-99% of it, 7 uses ~85%
+PER_DAY = 7
+FIRST, LAST = 5 * 60, 23 * 60  # user 10-31: "start in morning 5 am and end around 12" (IST)
+WINDOWS = [(FIRST + k * (LAST - FIRST) // (PER_DAY - 1), FIRST + k * (LAST - FIRST) // (PER_DAY - 1) + 45)
+           for k in range(PER_DAY)]  # one video inside each 45-min window, 05:00 ... 23:00
+MONTH_BUDGET = 40000       # Cloud Run seconds a month the videos may use (free 45,000 at 4 vCPU, less a margin)
+PACIFIC = ZoneInfo('America/Los_Angeles')  # Google's billing month
 POST_HOURS = (5, 24)       # a missed slot is caught up before midnight
 BUFFER = 2                 # videos kept built ahead, at any hour, so no slot waits on a ~20-min build
 VOICE_DIR = os.environ.get('VIRAL_VOICE_DIR', '/home/poster/voices/shiva-hindi')
@@ -554,7 +560,9 @@ def build(p, work):
         tf.add(SFX, arcname='sfx.wav')
         tf.add(job, arcname='job.json')
     video = os.path.join(work, 'video.mp4')
+    t = time.time()
     marks = cloud.render(tar, video) or cloud.render(tar, video)
+    _spend(time.time() - t)  # wall time of the request(s): at least what Cloud Run bills
     if not marks:
         raise RuntimeError('Cloud Run render failed twice')
     stage('rendered on Cloud Run (%s), %.0f s video' % (marks, _dur(video)))
@@ -566,9 +574,27 @@ def build(p, work):
             'seconds': round(_dur(video)), 'shots': len(shots)}
 
 
+def _render_left():
+    """Cloud Run seconds still free to use now: the month's budget paced by day, so no month can go over the free tier."""
+    import calendar
+    now = schedule.now().astimezone(PACIFIC)
+    used = _load('viral_render_usage.json', {}).get(now.strftime('%Y-%m'), 0)
+    return MONTH_BUDGET * now.day / calendar.monthrange(now.year, now.month)[1] - used
+
+
+def _spend(seconds):
+    u = _load('viral_render_usage.json', {})
+    m = schedule.now().astimezone(PACIFIC).strftime('%Y-%m')
+    u[m] = round(u.get(m, 0) + seconds, 1)
+    schedule._save('viral_render_usage.json', {k: u[k] for k in sorted(u)[-3:]})
+
+
 def build_one():
     """Called by the builder timer: one video whenever fewer than BUFFER are ready (any hour; the publisher paces them)."""
     if len(ready()) >= BUFFER:
+        return
+    if _render_left() < 250:
+        log('  viral build waits: this month\'s free Cloud Run time is used up to today (%.0f s left)' % _render_left())
         return
     from . import dedupe
     hist = _load('viral_posted.json', [])

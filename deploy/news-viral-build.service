@@ -1,5 +1,5 @@
 [Unit]
-Description=Indian Daily News long videos: build one whenever fewer than 2 are ready (user 2026-10-31: 5 a day)
+Description=Indian Daily News long videos: build one whenever fewer than 2 are ready, within the free Cloud Run budget
 After=network-online.target
 Wants=network-online.target
 
@@ -11,7 +11,7 @@ Environment=STATE_DIR=/home/poster/state-hi
 Environment=PROFILE=hi
 Environment=LOCAL_TZ=Asia/Kolkata
 # scripts need the stronger models: 3.7/3.6 Flash are used by nothing else; then the Hindi Page's old pool
-Environment=AI_BEST=gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash-lite,gemma-4-31b-it
+Environment=AI_BEST=gemini-3.7-flash,gemini-3.6-flash,gemini-3.8-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemma-4-31b-it
 Environment=AI_BULK=gemini-3.5-flash-lite,gemma-4-31b-it
 Environment=AI_VISION=gemini-3.5-flash-lite,gemma-4-31b-it
 Environment=FISH_KEY_FILE=/home/poster/.fish_api_key
