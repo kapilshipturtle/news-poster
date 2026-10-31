@@ -393,7 +393,7 @@ def story_clips(outlets, work):
     for k, u in enumerate(list(dict.fromkeys(e for o in outlets for e in o.get('embeds', [])))[:3]):
         src = os.path.join(work, 'story%d.mp4' % k)
         try:
-            r = moments._yt(['-f', 'bv*+ba/b', '-S', 'res:1280', '--merge-output-format', 'mp4', '--max-filesize', '150M',
+            r = moments._yt(['-f', 'bv*+ba/b', '-S', 'res:720', '--merge-output-format', 'mp4', '--max-filesize', '150M',
                              '--match-filter', 'duration<=?300 & !is_live', '-o', src, u], timeout=240)
         except subprocess.TimeoutExpired:
             r = None
@@ -460,14 +460,17 @@ def build(p, work):
     stage('pictures found: %d' % len(found))
     # every picture is downloaded and checked BEFORE the voice is made (live test 10-31: a 3.7-min voice was made, then
     # the pictures ran out at shot 3). Clips are cut 8.4 s long so they fit any slot; photos as they are.
-    pool = story_clips(outlets, work)
-    stage('story video pieces: %d' % len(pool))
+    story = story_clips(outlets, work)
+    stage('story video pieces: %d' % len(story))
+    pool = []
     for k, m in enumerate(found[:30]):
         f = _fetch(m, 8.0, os.path.join(work, 'src%03d' % k))
         if f:
             pool.append((m, f))
     bad = set(_check([f for _, f in pool], p['title'], names, work)) if pool else set()
-    pool = [x for k, x in enumerate(pool) if k not in bad]
+    # the story's own video skips the check: it IS the story, captions and all (live test 6: the check refused all 8
+    # pieces of the Instagram reel an article was about, for its burned-in captions)
+    pool = story + [x for k, x in enumerate(pool) if k not in bad]
     stage('usable pictures: %d (%d failed the picture check)' % (len(pool), len(bad)))
     if len(pool) < MIN_PICS:
         return {'skip': 'only %d usable pictures' % len(pool)}
