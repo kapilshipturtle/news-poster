@@ -43,6 +43,15 @@ def render(bucket, job):
     tarfile.open(work + '/in.tar.gz').extractall(work)
     marks['download_s'] = round(time.time() - t, 1)
     spec = json.load(open(work + '/job.json'))  # pieces: [{src, kind, layout, motion, seconds, effect, flash_in}], plan, total
+    if spec.get('type') == 'viral':  # Indian Daily News long videos (viral_render.py); news Reels take the path below
+        import viral_render
+        t1 = time.time()
+        video = viral_render.render(work, spec)
+        marks['render_s'] = round(time.time() - t1, 1)
+        gcs_put(bucket, job + '/reel.mp4', video, 'video/mp4')
+        marks['total_s'] = round(time.time() - t, 1)
+        marks['cpus'] = os.cpu_count()
+        return marks
     os.environ['SFX_DIR'] = work + '/sfx'
     t1 = time.time()
     with ThreadPoolExecutor(WORKERS) as ex:

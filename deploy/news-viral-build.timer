@@ -1,0 +1,10 @@
+[Unit]
+Description=Indian Daily News long videos: try a build every 20 minutes
+
+[Timer]
+OnCalendar=*:7/20
+RandomizedDelaySec=60
+Persistent=false
+
+[Install]
+WantedBy=timers.target

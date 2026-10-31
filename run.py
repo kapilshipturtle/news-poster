@@ -281,6 +281,23 @@ def reel_selftest():
 PAGES = {'us': ('/home/poster/state', 'America/New_York'), 'hi': ('/home/poster/state-hi', 'Asia/Kolkata')}
 
 
+def viral_test(viral):
+    picks = viral.pick([])
+    for p in picks[:3]:
+        work = os.path.join(viral.QUEUE, '..', 'viral_test')
+        shutil.rmtree(work, ignore_errors=True)
+        os.makedirs(work)
+        log('TEST story:', p['title'][:100])
+        res = viral.build(p, work)
+        if res.get('skip'):
+            log('  test skip:', res['skip'])
+            continue
+        shutil.copy(res['video'], '/tmp/viral-test.mp4')
+        json.dump(res, open('/tmp/viral-test.json', 'w'), ensure_ascii=False, indent=1)
+        log('TEST VIDEO /tmp/viral-test.mp4', res['seconds'], 's', res['title'])
+        return
+
+
 def page_need(state, tz, per_day=10):
     """How far behind its daily plan a Page is: its Reel times due within 90 min (missed ones included, never past the
     daily cap) minus the Reels it has ready. None = it cannot build now (outside its build hours, paused, braked, 2 ready
@@ -292,6 +309,8 @@ def page_need(state, tz, per_day=10):
         path = os.path.join(state, name)
         return json.load(open(path)) if os.path.exists(path) else default
     try:
+        if os.path.exists(os.path.join(state, 'reels_off')):  # 10-31: Indian Daily News posts long videos instead (viral)
+            return None
         if not schedule.build_time(z):
             return None
         if any(load(f, {}).get('until', '') > now.isoformat() for f in ('reel_ai_pause.json', 'reel_brake.json', 'brake.json')):
@@ -469,6 +488,15 @@ if __name__ == '__main__':
         reel_publish()
     elif cmd == 'reel-build':
         reel_build_one()
+    elif cmd in ('viral-build', 'viral-publish', 'viral-test'):  # Indian Daily News long videos (poster/viral.py)
+        load_env()
+        from poster import viral
+        if cmd == 'viral-build':
+            viral.build_one()
+        elif cmd == 'viral-publish':
+            viral.publish_due()
+        else:  # one video, NOT queued or published: saved for a frame check
+            viral_test(viral)
     elif cmd == 'reel-selftest':
         load_env()
         reel_selftest()

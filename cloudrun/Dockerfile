@@ -6,5 +6,6 @@ WORKDIR /app
 COPY poster/ /app/poster/
 COPY assets/fonts/ /app/assets/fonts/
 COPY cloudrun/server.py /app/server.py
+COPY cloudrun/viral_render.py /app/viral_render.py
 ENV PYTHONUNBUFFERED=1
 CMD ["python", "server.py"]

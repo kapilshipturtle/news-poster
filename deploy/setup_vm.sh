@@ -33,11 +33,11 @@ install -m 644 /home/poster/news-poster/deploy/news-reel-build.timer /etc/system
 for u in news-reel-hi.service news-reel-hi.timer news-reel-hi-build.service news-reel-hi-build.timer; do
   install -m 644 /home/poster/news-poster/deploy/$u /etc/systemd/system/$u
 done
-for u in news-reel-build news-reel-hi-build; do   # memory limits: a runaway ends the build, never the VM
+for u in news-reel-build news-reel-hi-build news-viral-build; do   # memory limits: a runaway ends the build, never the VM
   install -d /etc/systemd/system/$u.service.d
   install -m 644 /home/poster/news-poster/deploy/build-limits.conf /etc/systemd/system/$u.service.d/limits.conf
 done
-for u in news-netwatch.service news-netwatch.timer news-cleanup.service news-cleanup.timer; do
+for u in news-netwatch.service news-netwatch.timer news-cleanup.service news-cleanup.timer news-viral.service news-viral.timer news-viral-build.service news-viral-build.timer; do
   install -m 644 /home/poster/news-poster/deploy/$u /etc/systemd/system/$u
 done
 install -d /etc/systemd/journald.conf.d

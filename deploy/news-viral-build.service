@@ -1,0 +1,25 @@
+[Unit]
+Description=Indian Daily News long videos: build one when today's 3 are not covered (user 2026-10-31)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=poster
+WorkingDirectory=/home/poster/news-poster
+Environment=STATE_DIR=/home/poster/state-hi
+Environment=PROFILE=hi
+Environment=LOCAL_TZ=Asia/Kolkata
+# scripts need the stronger models: 3.7/3.6 Flash are used by nothing else; then the Hindi Page's old pool
+Environment=AI_BEST=gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash-lite,gemma-4-31b-it
+Environment=AI_BULK=gemini-3.5-flash-lite,gemma-4-31b-it
+Environment=AI_VISION=gemini-3.5-flash-lite,gemma-4-31b-it
+Environment=FISH_KEY_FILE=/home/poster/.fish_api_key
+Environment=VIRAL_VOICE_DIR=/home/poster/voices/shiva-hindi
+Environment=VIRAL_SFX=/home/poster/sfx/viral_hit.wav
+Environment=SFX_DIR=/home/poster/sfx
+Environment=CLOUD_RENDER_URL=https://news-render-234515853790.us-central1.run.app
+Environment=CLOUD_RENDER_BUCKET=news-poster-1021-31733-render
+# the same one build slot as the news Reels (-n: skip this tick when a news build runs)
+ExecStart=/usr/bin/flock -n -E 0 /home/poster/state/.reel.lock /home/poster/venv/bin/python run.py viral-build
+TimeoutStartSec=5400

@@ -1,0 +1,14 @@
+[Unit]
+Description=Indian Daily News long videos: publish the oldest ready video when one of today's 3 times is due
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=poster
+WorkingDirectory=/home/poster/news-poster
+Environment=STATE_DIR=/home/poster/state-hi
+Environment=PROFILE=hi
+Environment=LOCAL_TZ=Asia/Kolkata
+ExecStart=/usr/bin/flock -n -E 0 /home/poster/state-hi/.viralpub.lock /home/poster/venv/bin/python run.py viral-publish
+TimeoutStartSec=2400
