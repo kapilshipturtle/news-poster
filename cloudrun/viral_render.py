@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from PIL import Image, ImageDraw, ImageFont
 
 W, H, MY, MH = 1440, 1920, 565, 800
@@ -78,9 +79,12 @@ def card(img, lines, out):
     return out
 
 
-BLUR = ('[0:v]split[a][b];[a]scale=1440:800:force_original_aspect_ratio=increase,crop=1440:800,boxblur=30:3,eq=brightness=-0.08[bg];'
-        '[b]scale=-2:800[fg];[bg][fg]overlay=(W-w)/2:0,')
-FILL = 'scale=1440:800:force_original_aspect_ratio=increase,crop=1440:800,'
+BLUR = ('split[a][b];[a]scale=288:160:force_original_aspect_ratio=increase,crop=288:160,boxblur=6:3,scale=1440:800,'
+        'eq=brightness=-0.08[bm];'  # blurred at 1/5 size: same look, a fraction of the CPU
+        '[b]scale=-2:800,setsar=1[fg];[bm][fg]overlay=(W-w)/2:0[m]')
+FILL = 'scale=1440:800:force_original_aspect_ratio=increase,crop=1440:800,setsar=1[m]'
+PARALLEL = int(os.environ.get('VIRAL_PARALLEL', '1'))
+X264 = ['-c:v', 'libx264', '-crf', os.environ.get('VIRAL_CRF', '20'), '-preset', os.environ.get('VIRAL_PRESET', 'veryfast'), '-pix_fmt', 'yuv420p', '-r', '30', '-an']
 
 
 def _size(src):
@@ -89,19 +93,19 @@ def _size(src):
     return int(r[0]), int(r[1])
 
 
-def window(src, start, dur, out, still):
-    """A card or a wide picture fills the 16:9 window; a tall photo or a phone video (most viral posts) shows whole over
-    a blurred copy of itself."""
+def window(src, start, dur, out, still, canvas_png):
+    """One shot drawn straight into the FULL frame (canvas + 16:9 window) and encoded once; the shots are then joined
+    without re-encoding (MEASURED 10-31: encoding each shot at 1440x800 and the whole video again at 1440x1920 took
+    391 s on Cloud Run for a 225 s video, over the free tier at 5 a day). A card or a wide picture fills the window; a
+    tall photo or a phone video (most viral posts) shows whole over a blurred copy of itself."""
     w, h = Image.open(src).size if still else _size(src)
-    look = FILL if w / h >= 1.4 else BLUR
-    vf = look + 'setsar=1,fps=30,format=yuv420p'
-    if still:
-        run('-loop', '1', '-t', '%.3f' % dur, '-i', src, '-filter_complex' if look == BLUR else '-vf', vf,
-            '-c:v', 'libx264', '-crf', '18', '-preset', 'veryfast', '-an', out)
-    else:  # a clip shorter than its slot holds its last frame
-        run('-ss', '%.3f' % start, '-i', src, '-filter_complex' if look == BLUR else '-vf',
-            vf + ',tpad=stop_mode=clone:stop_duration=%.3f' % dur, '-t', '%.3f' % dur,
-            '-c:v', 'libx264', '-crf', '18', '-preset', 'veryfast', '-an', out)
+    head = '[0:v]' + ('loop=loop=-1:size=1:start=0,setpts=N/30/TB,' if still else 'fps=30,')  # a still decoded once
+    hold = '' if still else ',tpad=stop_mode=clone:stop_duration=%.3f' % dur  # a clip shorter than its slot holds its last frame
+    graph = (head + (FILL if w / h >= 1.4 else BLUR) +
+             ';[1:v]format=yuv420p,loop=loop=-1:size=1:start=0,setpts=N/30/TB[c];'
+             '[c][m]overlay=0:%d:shortest=1%s,trim=duration=%.3f,setpts=PTS-STARTPTS[v]' % (MY, hold, dur))
+    run(*([] if still else ['-ss', '%.3f' % start]), '-i', src, '-i', canvas_png, '-filter_complex', graph, '-map', '[v]',
+        '-t', '%.3f' % dur, *X264, out)
     return out
 
 
@@ -114,14 +118,16 @@ def render(work, spec):
     j = lambda f: os.path.join(work, f)
     canvas(spec['headline'], j('canvas.png'))
     cards = [card(j(c['img']), c['lines'], j('card%02d.png' % k)) for k, c in enumerate(spec['cards'])]
-    segs, b = [], spec.get('burst')
+    jobs, b = [], spec.get('burst')
     for k, s in enumerate(spec['shots']):
         src = cards[s['card']] if 'card' in s else j(s['src'])
-        segs.append(window(src, s.get('start', 0), s['dur'], j('seg%03d.mp4' % len(segs)), 'card' in s or s.get('still')))
+        jobs.append((src, s.get('start', 0), s['dur'], j('seg%03d.mp4' % len(jobs)), 'card' in s or s.get('still'), j('canvas.png')))
         if b and k == b['after_shot']:
-            segs.append(window(j(b['src']), b['start'], b['dur'], j('seg%03d.mp4' % len(segs)), False))
+            jobs.append((j(b['src']), b['start'], b['dur'], j('seg%03d.mp4' % len(jobs)), False, j('canvas.png')))
+    # shots one at a time by default: 3 at once measured no faster (72.1 vs 71.7 s), x264 already fills 4 vCPUs
+    with ThreadPoolExecutor(PARALLEL) as ex:
+        segs = list(ex.map(lambda a: window(*a), jobs))
     open(j('segs.txt'), 'w').write(''.join("file '%s'\n" % s for s in segs))
-    run('-f', 'concat', '-safe', '0', '-i', j('segs.txt'), '-c', 'copy', j('media.mp4'))
     # sound: narration (with the burst of the clip's own sound spliced in), one whoosh-boom per teaser line at voice level
     narr = j('voice.wav')
     if b:
@@ -142,9 +148,8 @@ def render(work, spec):
         'amix=inputs=%d:normalize=0:duration=first,loudnorm=I=-14:TP=-1.5[a]' % (len(spec['hits']) + 1)
     run(*ins, '-filter_complex', graph, '-map', '[a]', '-ar', '48000', j('audio.wav'))
     out = j('reel.mp4')
-    run('-loop', '1', '-i', j('canvas.png'), '-i', j('media.mp4'), '-i', j('audio.wav'), '-filter_complex',
-        '[0:v][1:v]overlay=0:%d:shortest=1,format=yuv420p[v]' % MY, '-map', '[v]', '-map', '2:a', '-r', '30', '-c:v', 'libx264', '-crf', '20',
-        '-preset', 'medium', '-c:a', 'aac', '-b:a', '160k', '-shortest', '-movflags', '+faststart', out)
+    run('-f', 'concat', '-safe', '0', '-i', j('segs.txt'), '-i', j('audio.wav'), '-map', '0:v', '-map', '1:a', '-c:v', 'copy',
+        '-c:a', 'aac', '-b:a', '160k', '-shortest', '-movflags', '+faststart', out)
     return out
 
 

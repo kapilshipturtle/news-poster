@@ -466,6 +466,8 @@ def build(p, work):
     stage('story video pieces: %d' % len(story))
     # fetched in batches only until there are enough (live test 6: each YouTube picture costs ~1.5 min of the free
     # server's CPU, and fetching all 30 took 13+ min although ~12 were needed)
+    if len(story) >= MIN_PICS:  # live test 7: Bing's "Aditya Singh" was a TV actor, not the man in the story's own video
+        found = [m for m in found if m['kind'] == 'clip']
     pool, rest, bad = [], list(enumerate(found[:30])), set()
     while rest and len(story) + len(pool) < ENOUGH:
         batch = []
@@ -516,8 +518,8 @@ def build(p, work):
         uses[x] = uses.get(x, 0) + 1
         files.append(f)
     stage('%d shots from %d different pictures' % (len(files), len(set(files))))
-    # hook cards: the story's people (photos first), one per teaser line
-    people = [f for f in dict.fromkeys(files) if f.endswith('.jpg')] or list(dict.fromkeys(files))
+    # hook cards: the story's people - its own video first (the real person), else photos, one per teaser line
+    people = ([f for _, f in story] or [f for f in dict.fromkeys(files) if f.endswith('.jpg')] or list(dict.fromkeys(files)))
     cards = []
     for j, t in enumerate(s['teaser']):
         img = os.path.join(work, 'card%d.jpg' % j)
