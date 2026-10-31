@@ -42,6 +42,7 @@ VIRAL_FEEDS = {  # MEASURED 2026-10-31: these answer with fresh people/oddity st
     'News18 Hindi': 'https://hindi.news18.com/rss/khabar/ajab-gajab.xml',  # 200 items, NO dates: counts only with a 2nd outlet
 }  # tested and NOT working: Aaj Tak, Amar Ujala, Jagran, Patrika (404), NDTV (403), Live Hindustan (503), Zee (no answer)
 MAX_USE = 3               # one picture on screen at most 3 times (he repeats pictures too) - more only when few exist
+ENOUGH = 16               # different pictures worth fetching for a ~3.5-min video (each shows ~2-3 times)
 MIN_PICS = 6              # different pictures a video needs (story video pieces count: his videos replay the viral clip)
 MAX_SHOT = 7.5            # his median shot is 6.6 s; a longer sentence gets two pictures
 moments.PREFER_VERTICAL = False  # the media window is 16:9, not a phone screen
@@ -394,7 +395,7 @@ def story_clips(outlets, work):
         src = os.path.join(work, 'story%d.mp4' % k)
         try:
             r = moments._yt(['-f', 'bv*+ba/b', '-S', 'res:720', '--merge-output-format', 'mp4', '--max-filesize', '150M',
-                             '--match-filter', 'duration<=?300 & !is_live', '-o', src, u], timeout=240)
+                             '--download-sections', '*0-120', '--match-filter', 'duration<=?900 & !is_live', '-o', src, u], timeout=240)
         except subprocess.TimeoutExpired:
             r = None
         if not os.path.exists(src):
@@ -405,8 +406,9 @@ def story_clips(outlets, work):
         t = 0.0
         while t < max(1.0, d - 3):
             piece = os.path.join(work, 'story%d_%02d.mp4' % (k, int(t)))
-            subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-ss', '%.2f' % t, '-i', src, '-t', '8.4', '-vf', 'scale=-2:800',
-                            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '128k', piece])
+            # stream copy (starts on the keyframe before t): live test 6 re-encoded 8 pieces of a 5-min embed in 7.5 min
+            subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-ss', '%.2f' % t, '-i', src, '-t', '8.4', '-c', 'copy',
+                            '-avoid_negative_ts', 'make_zero', piece])
             if os.path.exists(piece) and _dur(piece) > 1.0:
                 out.append(({'kind': 'clip', 'desc': 'the viral video itself (%s)' % urllib.parse.urlparse(u).netloc}, piece))
             t += step
@@ -462,15 +464,22 @@ def build(p, work):
     # the pictures ran out at shot 3). Clips are cut 8.4 s long so they fit any slot; photos as they are.
     story = story_clips(outlets, work)
     stage('story video pieces: %d' % len(story))
-    pool = []
-    for k, m in enumerate(found[:30]):
-        f = _fetch(m, 8.0, os.path.join(work, 'src%03d' % k))
-        if f:
-            pool.append((m, f))
-    bad = set(_check([f for _, f in pool], p['title'], names, work)) if pool else set()
+    # fetched in batches only until there are enough (live test 6: each YouTube picture costs ~1.5 min of the free
+    # server's CPU, and fetching all 30 took 13+ min although ~12 were needed)
+    pool, rest, bad = [], list(enumerate(found[:30])), set()
+    while rest and len(story) + len(pool) < ENOUGH:
+        batch = []
+        while rest and len(story) + len(pool) + len(batch) < ENOUGH + 4:  # +4 spare: the check refuses some
+            k, m = rest.pop(0)
+            f = _fetch(m, 8.0, os.path.join(work, 'src%03d' % k))
+            if f:
+                batch.append((m, f))
+        no = set(_check([f for _, f in batch], p['title'], names, work)) if batch else set()
+        bad |= {f for j, (_, f) in enumerate(batch) if j in no}
+        pool += [x for j, x in enumerate(batch) if j not in no]
     # the story's own video skips the check: it IS the story, captions and all (live test 6: the check refused all 8
     # pieces of the Instagram reel an article was about, for its burned-in captions)
-    pool = story + [x for k, x in enumerate(pool) if k not in bad]
+    pool = story + pool
     stage('usable pictures: %d (%d failed the picture check)' % (len(pool), len(bad)))
     if len(pool) < MIN_PICS:
         return {'skip': 'only %d usable pictures' % len(pool)}
