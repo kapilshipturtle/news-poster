@@ -204,13 +204,74 @@ def voice(sentences, work):
 
 
 # ---- story, script, pictures -------------------------------------------------------------------------------------------
-def pick(recent):
-    saved = sources.FEEDS, sources.MAX_AGE_H, sources.REQUIRE_DATE
-    sources.FEEDS, sources.MAX_AGE_H, sources.REQUIRE_DATE = VIRAL_FEEDS, 24, False  # people stories trend for a day
+STOP = set('के की का में है हैं और से को ने पर यह वह एक लिए कर तो भी ही हो गया गई गए रहा रही रहे था थी थे बाद साथ अब '
+           'वीडियो वायरल देख देखकर देखें लोग यूजर्स बोले हुआ हुई हुए करने करते किया दिया लिया अपने अपनी उसके उनके इस उस '
+           'video viral the and for with'.split())
+
+
+def _items(name, url):
+    """A tolerant reader for the viral feeds (live 10-31: News18's dates sit in CDATA and the general reader dropped
+    all 200 of its items)."""
+    import email.utils
+    import html
     try:
-        cands = [c for c in sources.trending() if len(c['outlets']) >= 2 or (c['fresh_h'] is not None and c['fresh_h'] <= 24)][:60]
-    finally:
-        sources.FEEDS, sources.MAX_AGE_H, sources.REQUIRE_DATE = saved
+        raw = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=20).read()
+    except (urllib.error.URLError, OSError):
+        return []
+    out = []
+    for it in re.findall(r'<item>(.*?)</item>', raw.decode('utf-8', 'ignore'), re.S)[:40]:
+        def tag(t):
+            m = re.search(r'<%s>\s*(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?\s*</%s>' % (t, t), it, re.S)
+            return html.unescape(m.group(1).strip()) if m else ''
+        title, link, age = tag('title'), tag('link'), None
+        try:
+            age = (schedule.now() - email.utils.parsedate_to_datetime(tag('pubDate'))).total_seconds() / 3600
+        except (TypeError, ValueError):
+            pass
+        if title and link.startswith('http') and (age is None or age <= 24):
+            out.append({'outlet': name, 'title': title, 'url': link, 'age_h': age})
+    return out
+
+
+def _words(t):
+    """Hindi words of 3+ letters, plus numbers and short Latin tokens ("40", "km", "ias"): those mark the same story
+    across outlets (TV9 and India TV's water-bike story shared only 2 Hindi words, but also "40" and "km")."""
+    t = t.lower()
+    return ({w for w in re.findall(r'[\u0900-\u097F]+', t) if len(w) >= 3 and w not in STOP} |
+            {w for w in re.findall(r'[a-z0-9]+', t) if len(w) >= 2 and w not in STOP})
+
+
+def candidates():
+    """Hindi-aware grouping (the general one keeps only English words: live 10-31 it turned 23 Hindi headlines into 0
+    stories). A story counts when 2+ outlets carry it, or when one outlet dated it within 24 h."""
+    with ThreadPoolExecutor(4) as ex:
+        items = [i for rows in ex.map(lambda kv: _items(*kv), VIRAL_FEEDS.items()) for i in rows]
+    clusters = []
+    for it in items:
+        w = _words(it['title'])
+        if len(w) < 3:
+            continue
+        for c in clusters:
+            shared = len(w & c['words'])
+            if shared >= 3 or shared / max(1, len(w | c['words'])) >= 0.3:
+                c['items'].append(it)
+                c['words'] |= w
+                break
+        else:
+            clusters.append({'words': set(w), 'items': [it]})
+    out = []
+    for c in clusters:
+        outlets = sorted({i['outlet'] for i in c['items']})
+        ages = [i['age_h'] for i in c['items'] if i['age_h'] is not None]
+        fresh = min(ages) if ages else None
+        if len(outlets) >= 2 or fresh is not None:
+            out.append({'title': c['items'][0]['title'], 'outlets': outlets, 'links': c['items'], 'fresh_h': fresh})
+    out.sort(key=lambda c: (-len(c['outlets']), c['fresh_h'] if c['fresh_h'] is not None else 99))
+    return out[:60]
+
+
+def pick(recent):
+    cands = candidates()
     lines = '\n'.join('{}. ({} outlets) {}'.format(i, len(c['outlets']), c['title']) for i, c in enumerate(cands))
     out = ai.gemini(PICK.format(cands=lines, recent='\n'.join('- ' + r for r in recent[-40:]) or '- none'), temperature=0.4, chain='bulk')
     picks = []
