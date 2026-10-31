@@ -466,8 +466,11 @@ def build(p, work):
     stage('story video pieces: %d' % len(story))
     # fetched in batches only until there are enough (live test 6: each YouTube picture costs ~1.5 min of the free
     # server's CPU, and fetching all 30 took 13+ min although ~12 were needed)
-    if len(story) >= MIN_PICS:  # live test 7: Bing's "Aditya Singh" was a TV actor, not the man in the story's own video
-        found = [m for m in found if m['kind'] == 'clip']
+    if story:  # its own video shows the real people; a found picture NAMING them may be someone else with that name
+        # (live test 7: Bing's "Aditya Singh" was a TV actor) - pictures of places, cars, objects stay (test 8 without
+        # them: 36 shots of one man talking)
+        who = {w.lower() for n in names for w in re.findall(r'[A-Za-z]{3,}', n)}
+        found = [m for m in found if not who & set(re.findall(r'[a-z]{3,}', m.get('desc', '').lower()))]
     pool, rest, bad = [], list(enumerate(found[:30])), set()
     while rest and len(story) + len(pool) < ENOUGH:
         batch = []

@@ -14,6 +14,9 @@ from PIL import Image, ImageDraw, ImageFont
 W, H, MY, MH = 1440, 1920, 565, 800
 BG = (122, 22, 22)
 FONT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'fonts', 'NotoSansDevanagari-ExtraBold.ttf')
+# the Devanagari font has no Latin letters: "CEO", "Bugatti", "GPS" came out as boxes (test 8) - his text mixes English in
+LATIN = os.path.join(os.path.dirname(FONT), 'Montserrat-Black.ttf')
+LATIN_SCALE = float(os.environ.get('VIRAL_LATIN_SCALE', '0.86'))
 
 
 def run(*a):
@@ -24,9 +27,43 @@ def font(size):
     return ImageFont.truetype(FONT, size, layout_engine=ImageFont.Layout.RAQM)
 
 
-def fit(d, text, width, start):
+def _runs(text):
+    """[[part, is_latin]]: English letters and digits in the Latin font, everything else in the Devanagari one."""
+    out = []
+    for ch in text:
+        lat = (ch.isascii() and ch.isalnum()) if ch.isalnum() else (out[-1][1] if out else False)
+        if out and out[-1][1] == lat:
+            out[-1][0] += ch
+        else:
+            out.append([ch, lat])
+    return out
+
+
+def _fonts(size):
+    return font(size), ImageFont.truetype(LATIN, max(8, int(size * LATIN_SCALE)), layout_engine=ImageFont.Layout.RAQM)
+
+
+def width(d, text, size):
+    fs = _fonts(size)
+    return sum(d.textlength(t, font=fs[lat]) for t, lat in _runs(text))
+
+
+def draw(d, x, base, text, size, fill):
+    """Text on one baseline, run by run."""
+    fs = _fonts(size)
+    for t, lat in _runs(text):
+        d.text((x, base), t, font=fs[lat], fill=fill, anchor='ls')
+        x += d.textlength(t, font=fs[lat])
+
+
+def ink_top(d, text, size):
+    fs = _fonts(size)
+    return min(d.textbbox((0, 0), t, font=fs[lat], anchor='ls')[1] for t, lat in _runs(text) if t.strip())
+
+
+def fit(d, text, w, start):
     size = start
-    while size > 40 and d.textlength(text, font=font(size)) > width:
+    while size > 40 and width(d, text, size) > w:
         size -= 2
     return size
 
@@ -36,19 +73,18 @@ def canvas(lines, out):
     d = ImageDraw.Draw(im)
     rows = [(lines[0], (255, 255, 255), 169), (lines[1], (255, 255, 0), 343), (lines[2], (255, 255, 255), 1378), (lines[3], (255, 255, 0), 1591)]
     for pair in (rows[:2], rows[2:]):  # one size per pair: the two lines read as one block (his layout)
-        f = font(min(fit(d, t, 1350, 190) for t, _, _ in pair))
+        size = min(fit(d, t, 1350, 190) for t, _, _ in pair)
         for text, col, top in pair:
-            x0, y0, x1, y1 = d.textbbox((0, 0), text, font=f)
-            d.text(((W - (x1 - x0)) / 2 - x0, top - y0), text, font=f, fill=col)
+            draw(d, (W - width(d, text, size)) / 2, top - ink_top(d, text, size), text, size, col)
     im.paste((0, 0, 0), (0, MY, W, MY + MH))
     im.save(out)
 
 
-def _wrap(d, words, size, width):
-    f, lines, cur = font(size), [], ''
+def _wrap(d, words, size, limit):
+    lines, cur = [], ''
     for w in words:
         t = (cur + ' ' + w).strip()
-        if cur and d.textlength(t, font=f) > width:
+        if cur and width(d, t, size) > limit:
             lines.append(cur)
             cur = w
         else:
@@ -70,11 +106,11 @@ def card(img, lines, out):
     size = 104
     while size > 56 and len(_wrap(d, words, size, 650)) > 6:  # as large as fits in 6 lines
         size -= 4
-    rows, f = _wrap(d, words, size, 650), font(size)
+    rows, ascent = _wrap(d, words, size, 650), font(size).getmetrics()[0]
     step = int(size * 1.3)
     top = (MH - len(rows) * step) // 2
     for k, t in enumerate(rows):
-        d.text((720 + (720 - d.textlength(t, font=f)) / 2, top + k * step), t, font=f, fill=(255, 255, 255))
+        draw(d, 720 + (720 - width(d, t, size)) / 2, top + k * step + ascent, t, size, (255, 255, 255))
     c.save(out)
     return out
 
